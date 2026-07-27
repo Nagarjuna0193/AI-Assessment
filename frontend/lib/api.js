@@ -24,6 +24,25 @@ async function request(path, options = {}) {
   return data;
 }
 
+async function transcribeAnswer(interviewId, audioBlob) {
+  const formData = new FormData();
+  formData.append('audio', audioBlob, 'answer.webm');
+
+  // No Content-Type header here — the browser sets the multipart boundary.
+  const res = await fetch(`${API_BASE_URL}/api/interviews/${interviewId}/answers/transcribe`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  const contentType = res.headers.get('content-type') || '';
+  const data = contentType.includes('application/json') ? await res.json() : null;
+
+  if (!res.ok) {
+    throw new ApiError(res.status, data);
+  }
+  return data;
+}
+
 export const api = {
   recordConsent: (payload) => request('/api/consent', { method: 'POST', body: payload }),
   createInterview: (payload) => request('/api/interviews', { method: 'POST', body: payload }),
@@ -33,4 +52,7 @@ export const api = {
     request(`/api/interviews/${interviewId}/evaluate`, { method: 'POST', body: {} }),
   listInterviews: () => request('/api/interviews'),
   getInterview: (interviewId) => request(`/api/interviews/${interviewId}`),
+  transcribeAnswer,
+  questionAudioUrl: (interviewId, questionId) =>
+    `${API_BASE_URL}/api/interviews/${interviewId}/questions/${questionId}/audio`,
 };

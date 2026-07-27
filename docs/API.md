@@ -19,6 +19,10 @@ Liveness check.
 Records DPDP consent for a candidate. Must be called — and succeed — before
 `POST /api/interviews` will allow an interview to start for that candidate.
 Creates the candidate record if one doesn't exist yet (upsert by email).
+`consentType` is a free string; the app currently checks for
+`"data_processing"` (always required) and `"voice_recording"` (required in
+addition, only when starting a `mode: "VOICE"` interview — see
+`backend/src/config.js`).
 
 **Request body**
 ```json
@@ -54,7 +58,9 @@ Claude to generate a structured question set, and persists the interview +
 questions. **Consent is enforced here at the API level** — a candidate
 without a recorded, non-withdrawn consent record covering the required
 consent type(s) (see `backend/src/config.js`) cannot start an interview,
-regardless of what the frontend does.
+regardless of what the frontend does. `mode: "VOICE"` requires an additional
+`voice_recording` consent record on top of `data_processing` — see
+`docs/DECISIONS.md`.
 
 **Request body**
 ```json
@@ -79,11 +85,58 @@ regardless of what the frontend does.
 **Errors**
 - `400 invalid_request` — missing `candidateEmail`, `jobDescriptionText`, or `resumeText`.
 - `404 candidate_not_found` — no candidate record for that email; consent must be recorded first.
-- `403 consent_required` — candidate exists but has no valid (non-withdrawn) consent covering the required type(s).
+- `403 consent_required` — candidate exists but has no valid (non-withdrawn) consent covering the required type(s) for the requested mode.
 - `502 question_generation_declined` — Claude declined the request (`stop_reason: "refusal"`).
 - `502 question_generation_failed` — Claude's response didn't match the expected structured-output schema.
 
 Writes an `audit_log` entry (`action: question_generated`) recording the model version used.
+
+---
+
+## `POST /api/interviews/:id/answers/transcribe`
+
+STT: transcribes a spoken answer to text via the voice provider (see
+`docs/DECISIONS.md`). **Does not persist a response** — it only returns the
+transcript for the candidate to review/edit client-side before submitting it
+through the existing `POST /api/interviews/:id/answers`. Only usable on an
+interview created with `mode: "VOICE"`, and re-checks `voice_recording`
+consent on every call (not just at interview creation) so a withdrawal takes
+effect immediately.
+
+**Request**: `multipart/form-data` with a single field `audio` (the recorded
+clip, e.g. `audio/webm`).
+
+**Response `200`**
+```json
+{ "text": "transcribed answer text" }
+```
+
+**Errors**
+- `400 invalid_request` — no `audio` file attached.
+- `404 interview_not_found`
+- `409 interview_not_in_progress`
+- `403 voice_not_enabled` — the interview was not started with `mode: "VOICE"`.
+- `403 voice_consent_required` — candidate has no valid (non-withdrawn) `voice_recording` consent.
+- `502 stt_failed` — the STT provider request failed.
+
+Writes an `audit_log` entry (`action: voice_answer_transcribed`) recording the model version used. The audio itself is never persisted — only the resulting text (once the candidate submits it via the normal answers endpoint) is stored.
+
+---
+
+## `GET /api/interviews/:id/questions/:questionId/audio`
+
+TTS: synthesizes the given question's text so it can be read aloud to the
+candidate (see `docs/DECISIONS.md`). Available regardless of interview mode.
+
+**Response `200`**: `audio/mpeg` binary body.
+
+**Errors**
+- `404 question_not_found` — no such question, or it doesn't belong to `:id`.
+- `502 tts_failed` — the TTS provider request failed.
+
+Not written to `audit_log` — TTS only reads back question text that was
+already generated (and logged) at interview creation; it doesn't process any
+candidate personal data.
 
 ---
 

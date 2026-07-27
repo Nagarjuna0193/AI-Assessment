@@ -1,6 +1,6 @@
 # TODO / Phase Checklist
 
-Current phase: **Phase 3 — candidate and reviewer UI done**
+Current phase: **Phase 4 — voice input/output layer done**
 
 See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 
@@ -58,9 +58,31 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
       URL — same auth gap as the backend API; deferred with it)
 
 ## Phase 4 — Voice interview flow
-- [ ] STT/TTS provider decision (documented in `docs/DECISIONS.md`)
-- [ ] Voice interview UI
-- [ ] Voice transcript capture
+- [x] STT/TTS provider decision (OpenAI Whisper + `tts-1`, single vendor;
+      cost estimate documented in `docs/DECISIONS.md`)
+- [x] Backend: `POST /api/interviews/:id/answers/transcribe` (STT, returns
+      transcript only — does not persist, so the existing
+      `POST /:id/answers` logic is untouched) and
+      `GET /api/interviews/:id/questions/:questionId/audio` (TTS)
+      — `backend/src/services/voiceService.js`,
+      `backend/src/routes/interviewRoutes.js`
+- [x] Voice interview UI — mode toggle (Text/Voice) + voice-specific consent
+      on the setup screen (`frontend/pages/index.js`), mic recording (fills
+      the existing answer textarea, falls back to typing on any failure) +
+      "Play question" TTS playback on the interview screen
+      (`frontend/components/VoiceControls.js`,
+      `frontend/pages/interview/[id].js`)
+- [x] Voice transcript capture — voice answers flow through the same
+      transcript/response persistence as text (Phase 2's `POST /:id/answers`);
+      raw audio is never stored, only the transcribed text (data
+      minimization — see `docs/COMPLIANCE.md`)
+- [x] `voice_recording` DPDP consent required (in addition to
+      `data_processing`) before a voice interview can start, re-checked on
+      every transcription call — `backend/src/config.js`,
+      `docs/COMPLIANCE.md`
+- [x] Jest tests for consent gating and both new voice endpoints
+      (`backend/tests/voice.test.js`, additions to
+      `backend/tests/interviews.test.js`) — 28/28 passing
 
 ## Phase 5 — Evaluation
 - [ ] Claude-based transcript evaluation against JD

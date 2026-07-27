@@ -56,6 +56,52 @@ describe('POST /api/interviews', () => {
     expect(anthropicService.generateQuestions).not.toHaveBeenCalled();
   });
 
+  it('rejects a voice-mode interview with 403 when only data_processing consent is recorded', async () => {
+    prisma.candidate.findUnique.mockResolvedValue({ id: 'cand_1', email: 'a@b.com' });
+    prisma.consentRecord.findMany.mockResolvedValue([
+      { consentType: 'data_processing', consentWithdrawnAt: null },
+    ]);
+
+    const res = await request(app).post('/api/interviews').send({
+      candidateEmail: 'a@b.com',
+      jobDescriptionText: 'JD',
+      resumeText: 'Resume',
+      mode: 'VOICE',
+    });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('consent_required');
+    expect(anthropicService.generateQuestions).not.toHaveBeenCalled();
+  });
+
+  it('creates a voice-mode interview when both data_processing and voice_recording consent exist', async () => {
+    prisma.candidate.findUnique.mockResolvedValue({ id: 'cand_1', email: 'a@b.com' });
+    prisma.consentRecord.findMany.mockResolvedValue([
+      { consentType: 'data_processing', consentWithdrawnAt: null },
+      { consentType: 'voice_recording', consentWithdrawnAt: null },
+    ]);
+    anthropicService.generateQuestions.mockResolvedValue({
+      questions: [{ questionText: 'Q1' }],
+      model: 'claude-opus-5',
+    });
+    prisma.interview.create.mockResolvedValue({
+      id: 'int_voice',
+      questions: [{ id: 'q1', orderIndex: 0, questionText: 'Q1' }],
+    });
+
+    const res = await request(app).post('/api/interviews').send({
+      candidateEmail: 'a@b.com',
+      jobDescriptionText: 'JD',
+      resumeText: 'Resume',
+      mode: 'VOICE',
+    });
+
+    expect(res.status).toBe(201);
+    expect(prisma.interview.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ mode: 'VOICE' }) })
+    );
+  });
+
   it('generates questions and creates the interview when consent exists', async () => {
     prisma.candidate.findUnique.mockResolvedValue({ id: 'cand_1', email: 'a@b.com' });
     prisma.consentRecord.findMany.mockResolvedValue([

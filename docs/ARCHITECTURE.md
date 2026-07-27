@@ -49,9 +49,12 @@ no microservices, no premature scaling.
                                                 +------------------+
 ```
 
-Voice path (Phase 2+): candidate audio -> STT provider -> text -> same
-backend flow as text interview -> TTS provider -> audio back to candidate.
-Provider choice and rationale to be documented in `DECISIONS.md` when made.
+Voice path (Phase 4): candidate audio -> OpenAI Whisper (STT) -> text,
+reviewed/edited by the candidate client-side -> submitted through the same
+`POST /:id/answers` used by the text flow (no separate voice answer-storage
+path). Questions -> OpenAI TTS -> audio back to the candidate, played on
+demand (no autoplay). Audio itself is never persisted — only the transcript.
+See `docs/DECISIONS.md` for the provider choice, cost, and consent design.
 
 ## Where consent capture and audit logging sit
 

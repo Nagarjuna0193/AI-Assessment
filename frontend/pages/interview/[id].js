@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '../../components/Layout';
+import VoiceControls from '../../components/VoiceControls';
 import { api, ApiError } from '../../lib/api';
 
 export default function InterviewPage() {
@@ -115,6 +116,14 @@ export default function InterviewPage() {
 
       <div className="bg-white border border-slate-200 rounded-lg p-6">
         <h1 className="text-lg font-medium text-slate-800 mb-4">{currentQuestion.questionText}</h1>
+        {interview && interview.mode === 'VOICE' && (
+          <VoiceControls
+            interviewId={id}
+            questionId={currentQuestion.id}
+            onTranscribed={(text) => setAnswer(text)}
+            disabled={submitting}
+          />
+        )}
         <form onSubmit={handleSubmit} className="space-y-4">
           <textarea
             rows={8}

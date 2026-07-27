@@ -32,8 +32,8 @@ AI) of the InterviewDesk platform — not a full ATS/interview platform.
 - **Frontend:** React (Next.js) + Tailwind
 - **DB:** Postgres (managed — Supabase or Railway), simple schema
 - **LLM:** Anthropic API (Claude) for question generation and evaluation
-- **Voice:** STT/TTS via a single provider (decided in Phase 2 — see
-  `docs/DECISIONS.md`)
+- **Voice:** STT/TTS via a single provider — OpenAI Whisper + TTS (decided in
+  Phase 4 — see `docs/DECISIONS.md`)
 - **Hosting:** Railway or Render
 - **Auth:** Email/OTP or magic link
 

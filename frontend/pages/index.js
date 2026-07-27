@@ -17,7 +17,9 @@ const initialForm = {
 export default function ConsentAndStartPage() {
   const router = useRouter();
   const [form, setForm] = useState(initialForm);
+  const [mode, setMode] = useState('TEXT');
   const [consentAccepted, setConsentAccepted] = useState(false);
+  const [voiceConsentAccepted, setVoiceConsentAccepted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -25,6 +27,7 @@ export default function ConsentAndStartPage() {
 
   const canSubmit =
     consentAccepted &&
+    (mode !== 'VOICE' || voiceConsentAccepted) &&
     form.fullName.trim() &&
     form.email.trim() &&
     form.jobDescriptionText.trim() &&
@@ -33,7 +36,7 @@ export default function ConsentAndStartPage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!consentAccepted) return;
+    if (!consentAccepted || (mode === 'VOICE' && !voiceConsentAccepted)) return;
 
     setSubmitting(true);
     setError(null);
@@ -46,12 +49,22 @@ export default function ConsentAndStartPage() {
         consentTextVersion: CONSENT_TEXT_VERSION,
       });
 
+      if (mode === 'VOICE') {
+        await api.recordConsent({
+          email: form.email.trim(),
+          fullName: form.fullName.trim(),
+          phone: form.phone.trim() || undefined,
+          consentType: 'voice_recording',
+          consentTextVersion: CONSENT_TEXT_VERSION,
+        });
+      }
+
       const { interviewId } = await api.createInterview({
         candidateEmail: form.email.trim(),
         jobTitle: form.jobTitle.trim() || undefined,
         jobDescriptionText: form.jobDescriptionText.trim(),
         resumeText: form.resumeText.trim(),
-        mode: 'TEXT',
+        mode,
       });
 
       router.push(`/interview/${interviewId}`);
@@ -125,6 +138,24 @@ export default function ConsentAndStartPage() {
         </section>
 
         <section className="bg-white border border-slate-200 rounded-lg p-5">
+          <h2 className="font-medium text-slate-800 mb-2">How would you like to interview?</h2>
+          <div className="flex gap-3">
+            <ModeOption
+              label="Text"
+              description="Type your answers"
+              selected={mode === 'TEXT'}
+              onClick={() => setMode('TEXT')}
+            />
+            <ModeOption
+              label="Voice"
+              description="Speak your answers, questions read aloud"
+              selected={mode === 'VOICE'}
+              onClick={() => setMode('VOICE')}
+            />
+          </div>
+        </section>
+
+        <section className="bg-white border border-slate-200 rounded-lg p-5">
           <h2 className="font-medium text-slate-800 mb-2">Consent to data processing</h2>
           <div className="text-sm text-slate-600 space-y-2 max-h-40 overflow-y-auto border border-slate-100 rounded p-3 bg-slate-50">
             <p>
@@ -157,6 +188,33 @@ export default function ConsentAndStartPage() {
             </span>
           </label>
         </section>
+
+        {mode === 'VOICE' && (
+          <section className="bg-white border border-slate-200 rounded-lg p-5">
+            <h2 className="font-medium text-slate-800 mb-2">Consent to voice recording</h2>
+            <div className="text-sm text-slate-600 space-y-2 max-h-40 overflow-y-auto border border-slate-100 rounded p-3 bg-slate-50">
+              <p>
+                Voice interviews additionally require your consent to your spoken answers being
+                recorded and sent to our speech-to-text provider to convert them into a written
+                transcript, and to interview questions being sent to a text-to-speech provider so
+                they can be read aloud to you. The audio itself is not stored — only the resulting
+                text transcript is kept, for the same evaluation purpose described above.
+              </p>
+            </div>
+            <label className="flex items-start gap-2 mt-3 text-sm">
+              <input
+                type="checkbox"
+                checked={voiceConsentAccepted}
+                onChange={(e) => setVoiceConsentAccepted(e.target.checked)}
+                className="mt-1"
+              />
+              <span>
+                I consent to my spoken answers being processed by a voice AI provider as described
+                (consent version {CONSENT_TEXT_VERSION}).
+              </span>
+            </label>
+          </section>
+        )}
 
         {error && <p className="text-sm text-red-600">{error}</p>}
 
@@ -195,5 +253,20 @@ function Field({ label, required, children }) {
       </span>
       <div className="mt-1">{children}</div>
     </label>
+  );
+}
+
+function ModeOption({ label, description, selected, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex-1 text-left border rounded-md p-3 transition-colors ${
+        selected ? 'border-slate-900 bg-slate-50' : 'border-slate-200 hover:border-slate-300'
+      }`}
+    >
+      <p className="text-sm font-medium text-slate-800">{label}</p>
+      <p className="text-xs text-slate-500 mt-0.5">{description}</p>
+    </button>
   );
 }
