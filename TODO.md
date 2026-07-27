@@ -1,6 +1,6 @@
 # TODO / Phase Checklist
 
-Current phase: **Phase 1 — data model done, Express scaffold + auth still pending**
+Current phase: **Phase 2 — core interview engine backend done**
 
 See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 
@@ -23,10 +23,22 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 - [ ] Express (or Next.js API routes) scaffold — deferred to a later phase
 - [ ] Basic auth (email/OTP or magic link) — deferred to a later phase
 
-## Phase 2 — Question generation
-- [ ] JD + resume upload/parsing
-- [ ] Claude-based question generation
-- [ ] Consent capture wired in before any LLM call
+## Phase 2 — Core interview engine backend
+- [x] `POST /api/consent` — records DPDP consent, upserts candidate
+- [x] `POST /api/interviews` — accepts JD + resume text, enforces consent at
+      the API level, calls Claude to generate a structured question set
+- [x] `POST /api/interviews/:id/answers` — submits an answer, returns next
+      question or end-of-interview signal
+- [x] `POST /api/interviews/:id/evaluate` — calls Claude on the full
+      transcript, returns/stores structured score + feedback
+- [x] Every AI decision (question generation, evaluation) logged to
+      `audit_log` per `docs/COMPLIANCE.md`
+- [x] Jest + Supertest test suite (13 tests, mocked Prisma + Anthropic
+      service) — `cd backend && npm test`
+- [x] `docs/API.md` updated with all endpoints
+- [ ] JD + resume **file** upload/parsing (currently plain text in the
+      request body — file handling deferred)
+- [ ] Auth middleware on these routes (still open from Phase 1)
 
 ## Phase 3 — Text interview flow
 - [ ] Candidate-facing interview UI (text)
