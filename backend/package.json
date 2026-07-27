@@ -1,0 +1,17 @@
+{
+  "name": "ai-interview-bot-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Backend for AI Interview Bot (schema/migrations only as of Phase 1)",
+  "scripts": {
+    "prisma:generate": "prisma generate",
+    "prisma:migrate:dev": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.18.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.18.0"
+  }
+}

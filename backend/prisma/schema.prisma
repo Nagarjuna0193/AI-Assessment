@@ -1,0 +1,152 @@
+// Phase 1: data model only. No application code reads/writes through this
+// yet — that starts in a later phase.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum InterviewMode {
+  TEXT
+  VOICE
+}
+
+enum InterviewStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model Candidate {
+  id                 String    @id @default(uuid())
+  fullName           String    @map("full_name")
+  email              String    @unique
+  phone              String?
+  resumeText         String?   @map("resume_text")
+  resumeUrl          String?   @map("resume_url")
+  // DPDP: when this candidate's personal data is due for deletion/anonymization.
+  dataRetentionUntil DateTime? @map("data_retention_until")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  interviews     Interview[]
+  consentRecords ConsentRecord[]
+
+  @@map("candidates")
+}
+
+model Interview {
+  id                  String          @id @default(uuid())
+  candidateId         String          @map("candidate_id")
+  jobTitle            String?         @map("job_title")
+  jobDescriptionText  String          @map("job_description_text")
+  mode                InterviewMode   @default(TEXT)
+  status              InterviewStatus @default(SCHEDULED)
+  scheduledAt         DateTime?       @map("scheduled_at")
+  startedAt           DateTime?       @map("started_at")
+  completedAt         DateTime?       @map("completed_at")
+  // DPDP: when this interview's data is due for deletion/anonymization.
+  dataRetentionUntil  DateTime?       @map("data_retention_until")
+  createdAt           DateTime        @default(now()) @map("created_at")
+  updatedAt           DateTime        @updatedAt @map("updated_at")
+
+  candidate      Candidate       @relation(fields: [candidateId], references: [id])
+  questions      Question[]
+  responses      Response[]
+  evaluations    Evaluation[]
+  consentRecords ConsentRecord[]
+
+  @@map("interviews")
+}
+
+model Question {
+  id               String   @id @default(uuid())
+  interviewId      String   @map("interview_id")
+  orderIndex       Int      @map("order_index")
+  questionText     String   @map("question_text")
+  // Model + prompt version that generated this question, for auditability.
+  generatedByModel String?  @map("generated_by_model")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  interview Interview  @relation(fields: [interviewId], references: [id])
+  responses Response[]
+
+  @@map("questions")
+}
+
+model Response {
+  id               String    @id @default(uuid())
+  interviewId      String    @map("interview_id")
+  questionId       String    @map("question_id")
+  responseText     String?   @map("response_text")
+  responseAudioUrl String?   @map("response_audio_url")
+  submittedAt      DateTime? @map("submitted_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  interview Interview @relation(fields: [interviewId], references: [id])
+  question  Question  @relation(fields: [questionId], references: [id])
+
+  @@map("responses")
+}
+
+model Evaluation {
+  id                   String    @id @default(uuid())
+  interviewId          String    @map("interview_id")
+  overallScore         Decimal?  @map("overall_score") @db.Decimal(5, 2)
+  // Structured per-criterion scores/notes.
+  scorecard            Json?     @map("scorecard")
+  summaryText          String?   @map("summary_text")
+  modelVersion         String?   @map("model_version")
+  humanReviewRequested Boolean   @default(false) @map("human_review_requested")
+  humanReviewNotes     String?   @map("human_review_notes")
+  evaluatedAt          DateTime? @map("evaluated_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  interview Interview @relation(fields: [interviewId], references: [id])
+
+  @@map("evaluations")
+}
+
+model ConsentRecord {
+  id                 String    @id @default(uuid())
+  candidateId        String    @map("candidate_id")
+  interviewId        String?   @map("interview_id")
+  // e.g. "data_processing", "recording", "ai_evaluation"
+  consentType        String    @map("consent_type")
+  // Version identifier of the consent text shown to the candidate.
+  consentTextVersion String    @map("consent_text_version")
+  consentGivenAt     DateTime  @map("consent_given_at")
+  consentWithdrawnAt DateTime? @map("consent_withdrawn_at")
+  ipAddress          String?   @map("ip_address")
+  createdAt          DateTime  @default(now()) @map("created_at")
+
+  candidate Candidate  @relation(fields: [candidateId], references: [id])
+  interview Interview? @relation(fields: [interviewId], references: [id])
+
+  @@map("consent_records")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  // "candidate" | "recruiter" | "system"
+  actorType    String   @map("actor_type")
+  actorId      String?  @map("actor_id")
+  // e.g. "question_generated", "evaluation_generated", "consent_recorded"
+  action       String
+  // e.g. "interview" | "evaluation" | "question" | "consent_record"
+  entityType   String   @map("entity_type")
+  entityId     String?  @map("entity_id")
+  modelVersion String?  @map("model_version")
+  promptRef    String?  @map("prompt_ref")
+  inputRef     String?  @map("input_ref")
+  outputRef    String?  @map("output_ref")
+  purpose      String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("audit_log")
+}

@@ -1,6 +1,6 @@
 # TODO / Phase Checklist
 
-Current phase: **Phase 0 — done**
+Current phase: **Phase 1 — data model done, Express scaffold + auth still pending**
 
 See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 
@@ -13,11 +13,15 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 - [x] `TODO.md` created
 - [x] `.env.example` created
 
-## Phase 1 — Backend & DB scaffold
-- [ ] Express (or Next.js API routes) scaffold
-- [ ] Postgres schema: candidates, interviews, transcripts, consent log,
-      audit log, feedback reports
-- [ ] Basic auth (email/OTP or magic link)
+## Phase 1 — Data model
+- [x] Postgres schema designed: candidates, interviews, questions,
+      responses, evaluations, consent_records, audit_log
+- [x] Migration tool chosen (Prisma) and documented in `docs/DECISIONS.md`
+- [x] Migration files written (`backend/prisma/schema.prisma` +
+      `backend/prisma/migrations/`)
+- [x] Schema documented in `docs/ARCHITECTURE.md`
+- [ ] Express (or Next.js API routes) scaffold — deferred to a later phase
+- [ ] Basic auth (email/OTP or magic link) — deferred to a later phase
 
 ## Phase 2 — Question generation
 - [ ] JD + resume upload/parsing

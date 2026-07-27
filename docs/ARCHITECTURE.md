@@ -64,6 +64,23 @@ Provider choice and rationale to be documented in `DECISIONS.md` when made.
   This supports DPDP breach reporting and gives a human-review path a place
   to start from. See `docs/COMPLIANCE.md`.
 
+## Data model
+
+Schema defined in `backend/prisma/schema.prisma` (Prisma; see
+`docs/DECISIONS.md` for tooling choice), migrated via
+`backend/prisma/migrations/`. No API routes read/write this yet — schema
+only as of Phase 1.
+
+| Table | Purpose |
+|-------|---------|
+| `candidates` | Candidate identity and resume data. Carries `data_retention_until` for DPDP-driven deletion/anonymization. |
+| `interviews` | One interview session per candidate: JD text, mode (text/voice), status, timing. Also carries its own `data_retention_until`. |
+| `questions` | Interview questions generated for a given interview, in order, tagged with the generating model/prompt version for auditability. |
+| `responses` | Candidate answers to questions (text and/or audio reference), linked to both the interview and the specific question. |
+| `evaluations` | One structured evaluation/feedback report per interview: overall score, per-criterion `scorecard` JSON, summary, model version, and human-review request/notes fields. |
+| `consent_records` | DPDP consent trail: consent type, `consent_text_version`, `consent_given_at`, optional `consent_withdrawn_at`, linked to a candidate and optionally a specific interview. |
+| `audit_log` | Append-style log of AI-driven actions (question generation, evaluation) and other sensitive actions: actor, action, entity, model/prompt version, input/output references, purpose, timestamp. |
+
 ## Data flow (happy path)
 
 1. Recruiter uploads JD + candidate resume.
