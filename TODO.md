@@ -1,6 +1,6 @@
 # TODO / Phase Checklist
 
-Current phase: **Phase 2 — core interview engine backend done**
+Current phase: **Phase 3 — candidate and reviewer UI done**
 
 See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 
@@ -39,11 +39,23 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 - [ ] JD + resume **file** upload/parsing (currently plain text in the
       request body — file handling deferred)
 - [ ] Auth middleware on these routes (still open from Phase 1)
+- [x] `GET /api/interviews` and `GET /api/interviews/:id` (read-only, added
+      in Phase 3 to support the reviewer dashboard and interview-screen
+      refresh recovery — see `docs/DECISIONS.md`)
 
 ## Phase 3 — Text interview flow
-- [ ] Candidate-facing interview UI (text)
-- [ ] Transcript capture in Postgres
-- [ ] Audit logging wired in for all LLM calls
+- [x] Candidate-facing interview UI (text) — `frontend/pages/index.js`
+      (consent + interview setup), `frontend/pages/interview/[id].js`,
+      `frontend/pages/interview/[id]/complete.js`
+- [x] Transcript capture in Postgres (via existing Phase 2
+      `POST /api/interviews/:id/answers`)
+- [x] Audit logging wired in for all LLM calls (unchanged from Phase 2 — no
+      new LLM calls added in Phase 3)
+- [x] Reviewer dashboard UI — `frontend/pages/dashboard/index.js` (list),
+      `frontend/pages/dashboard/[id].js` (transcript + evaluation, manual
+      "Run evaluation" trigger)
+- [ ] Auth on the reviewer dashboard (currently open to anyone with the
+      URL — same auth gap as the backend API; deferred with it)
 
 ## Phase 4 — Voice interview flow
 - [ ] STT/TTS provider decision (documented in `docs/DECISIONS.md`)

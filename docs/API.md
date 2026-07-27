@@ -1,8 +1,7 @@
 # API Reference
 
 Backend API for the interview flow. Base path: `/api`. All bodies/responses
-are JSON. As of Phase 2, this is the candidate/interview engine only — no
-auth middleware yet (planned alongside the frontend in a later phase).
+are JSON. No auth middleware yet (still open from Phase 1/2 — see `TODO.md`).
 
 ## `GET /health`
 
@@ -150,6 +149,62 @@ feedback.
 - `502 evaluation_failed` — Claude's response didn't match the expected structured-output schema.
 
 Writes an `audit_log` entry (`action: evaluation_generated`) recording the model version used.
+
+---
+
+## `GET /api/interviews`
+
+Lists all interviews, most recent first. Used by the reviewer dashboard
+(Phase 3). Read-only — no auth yet (see `docs/DECISIONS.md`).
+
+**Response `200`**
+```json
+{
+  "interviews": [
+    {
+      "id": "...",
+      "jobTitle": "Backend Engineer",
+      "mode": "TEXT",
+      "status": "COMPLETED",
+      "createdAt": "...",
+      "candidate": { "id": "...", "fullName": "Jane Doe", "email": "..." },
+      "evaluation": { "overallScore": 78 } // or null if not yet evaluated
+    }
+  ]
+}
+```
+
+---
+
+## `GET /api/interviews/:id`
+
+Fetches a single interview's full transcript and (if present) evaluation.
+Used by the reviewer dashboard to show the Q&A transcript alongside the
+score/feedback, and by the candidate-facing interview screen to recover
+in-progress state on page reload.
+
+**Response `200`**
+```json
+{
+  "interview": {
+    "id": "...",
+    "jobTitle": "Backend Engineer",
+    "jobDescriptionText": "...",
+    "mode": "TEXT",
+    "status": "COMPLETED",
+    "createdAt": "...",
+    "completedAt": "...",
+    "candidate": { "id": "...", "fullName": "Jane Doe", "email": "..." }
+  },
+  "transcript": [
+    { "questionId": "...", "orderIndex": 0, "questionText": "...", "responseText": "..." }
+  ],
+  "evaluation": { "id": "...", "overallScore": 78, "summaryText": "...", "scorecard": [...] } // or null
+}
+```
+
+**Errors**
+- `404 interview_not_found`
 
 ---
 

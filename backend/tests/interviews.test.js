@@ -1,7 +1,7 @@
 jest.mock('../src/db/prismaClient', () => ({
   candidate: { findUnique: jest.fn() },
   consentRecord: { findMany: jest.fn() },
-  interview: { create: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+  interview: { create: jest.fn(), findUnique: jest.fn(), findMany: jest.fn(), update: jest.fn() },
   question: { findUnique: jest.fn(), count: jest.fn(), findFirst: jest.fn(), findMany: jest.fn() },
   response: { create: jest.fn(), findFirst: jest.fn(), findMany: jest.fn(), count: jest.fn() },
   evaluation: { create: jest.fn() },
@@ -233,5 +233,79 @@ describe('POST /api/interviews/:id/evaluate', () => {
     expect(res.status).toBe(502);
     expect(res.body.error).toBe('evaluation_declined');
     expect(prisma.evaluation.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/interviews', () => {
+  it('lists interviews with candidate and latest evaluation summary', async () => {
+    prisma.interview.findMany.mockResolvedValue([
+      {
+        id: 'int_1',
+        jobTitle: 'Backend Engineer',
+        mode: 'TEXT',
+        status: 'COMPLETED',
+        createdAt: new Date('2026-07-01'),
+        candidate: { id: 'cand_1', fullName: 'Jane Doe', email: 'a@b.com' },
+        evaluations: [{ overallScore: 78 }],
+      },
+      {
+        id: 'int_2',
+        jobTitle: 'Frontend Engineer',
+        mode: 'TEXT',
+        status: 'IN_PROGRESS',
+        createdAt: new Date('2026-07-02'),
+        candidate: { id: 'cand_2', fullName: 'John Smith', email: 'c@d.com' },
+        evaluations: [],
+      },
+    ]);
+
+    const res = await request(app).get('/api/interviews');
+
+    expect(res.status).toBe(200);
+    expect(res.body.interviews).toHaveLength(2);
+    expect(res.body.interviews[0].evaluation).toEqual({ overallScore: 78 });
+    expect(res.body.interviews[1].evaluation).toBeNull();
+  });
+});
+
+describe('GET /api/interviews/:id', () => {
+  it('returns 404 when the interview does not exist', async () => {
+    prisma.interview.findUnique.mockResolvedValue(null);
+
+    const res = await request(app).get('/api/interviews/int_missing');
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('interview_not_found');
+  });
+
+  it('returns the transcript and evaluation for a completed interview', async () => {
+    prisma.interview.findUnique.mockResolvedValue({
+      id: 'int_1',
+      jobTitle: 'Backend Engineer',
+      jobDescriptionText: 'JD text',
+      mode: 'TEXT',
+      status: 'COMPLETED',
+      createdAt: new Date('2026-07-01'),
+      completedAt: new Date('2026-07-01'),
+      candidate: { id: 'cand_1', fullName: 'Jane Doe', email: 'a@b.com' },
+      questions: [
+        {
+          id: 'q1',
+          orderIndex: 0,
+          questionText: 'Q1',
+          responses: [{ responseText: 'A1' }],
+        },
+      ],
+      evaluations: [{ id: 'eval_1', overallScore: 78, summaryText: 'Good fit', scorecard: [] }],
+    });
+
+    const res = await request(app).get('/api/interviews/int_1');
+
+    expect(res.status).toBe(200);
+    expect(res.body.interview.id).toBe('int_1');
+    expect(res.body.transcript).toEqual([
+      { questionId: 'q1', orderIndex: 0, questionText: 'Q1', responseText: 'A1' },
+    ]);
+    expect(res.body.evaluation.overallScore).toBe(78);
   });
 });

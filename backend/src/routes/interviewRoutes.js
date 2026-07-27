@@ -6,6 +6,80 @@ const anthropicService = require('../services/anthropicService');
 
 const router = express.Router();
 
+// List interviews for the reviewer dashboard, most recent first.
+router.get('/', async (req, res, next) => {
+  try {
+    const interviews = await prisma.interview.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        candidate: { select: { id: true, fullName: true, email: true } },
+        evaluations: { orderBy: { createdAt: 'desc' }, take: 1 },
+      },
+    });
+
+    res.json({
+      interviews: interviews.map((interview) => ({
+        id: interview.id,
+        jobTitle: interview.jobTitle,
+        mode: interview.mode,
+        status: interview.status,
+        createdAt: interview.createdAt,
+        candidate: interview.candidate,
+        evaluation: interview.evaluations[0]
+          ? { overallScore: interview.evaluations[0].overallScore }
+          : null,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Fetch a single interview's full transcript + evaluation for reviewers.
+router.get('/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const interview = await prisma.interview.findUnique({
+      where: { id },
+      include: {
+        candidate: { select: { id: true, fullName: true, email: true } },
+        questions: {
+          orderBy: { orderIndex: 'asc' },
+          include: { responses: true },
+        },
+        evaluations: { orderBy: { createdAt: 'desc' }, take: 1 },
+      },
+    });
+
+    if (!interview) {
+      return res.status(404).json({ error: 'interview_not_found' });
+    }
+
+    res.json({
+      interview: {
+        id: interview.id,
+        jobTitle: interview.jobTitle,
+        jobDescriptionText: interview.jobDescriptionText,
+        mode: interview.mode,
+        status: interview.status,
+        createdAt: interview.createdAt,
+        completedAt: interview.completedAt,
+        candidate: interview.candidate,
+      },
+      transcript: interview.questions.map((q) => ({
+        questionId: q.id,
+        orderIndex: q.orderIndex,
+        questionText: q.questionText,
+        responseText: q.responses[0] ? q.responses[0].responseText : null,
+      })),
+      evaluation: interview.evaluations[0] || null,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 function mapAnthropicError(err, res, declinedError, failedError) {
   if (err instanceof anthropicService.AnthropicRefusalError) {
     res.status(502).json({ error: declinedError, message: err.message });
