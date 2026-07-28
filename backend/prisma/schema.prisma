@@ -1,5 +1,7 @@
-// Phase 1: data model only. No application code reads/writes through this
-// yet — that starts in a later phase.
+// Phase 4.6: interviews split into interview_templates (the JD/role, shared
+// across candidates) + candidate_sessions (one invited candidate's actual
+// attempt). See docs/DECISIONS.md for the migration from the Phase 1/2
+// single `interviews` table.
 
 generator client {
   provider = "prisma-client-js"
@@ -10,18 +12,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum InterviewMode {
-  TEXT
-  VOICE
-}
-
-enum InterviewStatus {
-  SCHEDULED
-  IN_PROGRESS
-  COMPLETED
-  CANCELLED
-}
-
 enum OrgRole {
   ADMIN
   REVIEWER
@@ -30,6 +20,27 @@ enum OrgRole {
 enum CreditTransactionType {
   GRANT
   DEDUCTION
+}
+
+enum QuestionMode {
+  AI
+  MANUAL
+}
+
+// Candidate's answer mode for a session — same TEXT/VOICE concept the old
+// Interview.mode carried.
+enum SessionMode {
+  TEXT
+  VOICE
+}
+
+// INVITED replaces the old SCHEDULED: a session exists (credit already
+// deducted) but the candidate hasn't opened the invite link yet.
+enum SessionStatus {
+  INVITED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
 }
 
 model Candidate {
@@ -44,40 +55,78 @@ model Candidate {
   createdAt          DateTime  @default(now()) @map("created_at")
   updatedAt          DateTime  @updatedAt @map("updated_at")
 
-  interviews     Interview[]
   consentRecords ConsentRecord[]
 
   @@map("candidates")
 }
 
-model Interview {
-  id                 String          @id @default(uuid())
-  candidateId        String          @map("candidate_id")
-  // Org that consumed a credit for this interview. Nullable: interviews
-  // created before Phase 4.5 have no org association — see docs/DECISIONS.md.
-  orgId              String?         @map("org_id")
-  jobTitle           String?         @map("job_title")
-  jobDescriptionText String          @map("job_description_text")
-  mode               InterviewMode   @default(TEXT)
-  status             InterviewStatus @default(SCHEDULED)
-  scheduledAt        DateTime?       @map("scheduled_at")
-  startedAt          DateTime?       @map("started_at")
-  completedAt        DateTime?       @map("completed_at")
-  // DPDP: when this interview's data is due for deletion/anonymization.
-  dataRetentionUntil DateTime?       @map("data_retention_until")
-  createdAt          DateTime        @default(now()) @map("created_at")
-  updatedAt          DateTime        @updatedAt @map("updated_at")
+// The JD/role a recruiter is hiring for. Created once by an org admin;
+// many candidate_sessions (one per invited candidate) attach to it.
+model InterviewTemplate {
+  id                 String       @id @default(uuid())
+  orgId              String       @map("org_id")
+  roleName           String       @map("role_name")
+  // Free-text internal requisition/job identifier — no ATS integration in
+  // this phase, so it's not a foreign key to anything. See docs/DECISIONS.md.
+  jobId              String?      @map("job_id")
+  jobDescriptionText String       @map("job_description_text")
+  questionMode       QuestionMode @default(AI) @map("question_mode")
+  // Fixed question set, only populated/used when questionMode = MANUAL.
+  manualQuestions    Json?        @map("manual_questions")
+  // Nullable: only org_users create templates going forward; best-effort
+  // migrated (Phase 4.5-and-earlier) data has no real creator to attribute.
+  createdByOrgUserId String?      @map("created_by_org_user_id")
+  createdAt          DateTime     @default(now()) @map("created_at")
+  updatedAt          DateTime     @updatedAt @map("updated_at")
 
-  candidate         Candidate          @relation(fields: [candidateId], references: [id])
-  organization      Organization?      @relation(fields: [orgId], references: [id])
+  organization      Organization       @relation(fields: [orgId], references: [id])
+  createdByOrgUser  OrgUser?           @relation(fields: [createdByOrgUserId], references: [id])
+  candidateSessions CandidateSession[]
+
+  @@index([orgId])
+  @@map("interview_templates")
+}
+
+// One invited candidate's attempt against a template — this is the new
+// parent of questions/responses/evaluations, replacing the old Interview.
+model CandidateSession {
+  id                 String        @id @default(uuid())
+  templateId         String        @map("template_id")
+  // Denormalized from the template for single-table org-scoped queries
+  // (dashboard list/detail) without a join.
+  orgId              String        @map("org_id")
+  candidateName      String        @map("candidate_name")
+  email              String
+  // Opaque, unguessable candidate-facing identifier — the candidate flow
+  // (consent, resume upload, interview, voice) is addressed by this token,
+  // never by the internal id reviewers use. See docs/DECISIONS.md.
+  inviteToken        String        @unique @map("invite_token")
+  status             SessionStatus @default(INVITED)
+  mode               SessionMode   @default(TEXT)
+  resumeFileRef      String?       @map("resume_file_ref")
+  resumeText         String?       @map("resume_text")
+  // 0-100 LLM-judged resume-vs-JD match score + short rationale.
+  resumeJdScore      Int?          @map("resume_jd_score")
+  resumeJdRationale  String?       @map("resume_jd_rationale")
+  consentRecordId    String?       @unique @map("consent_record_id")
+  startedAt          DateTime?     @map("started_at")
+  completedAt        DateTime?     @map("completed_at")
+  // DPDP: when this session's data is due for deletion/anonymization.
+  dataRetentionUntil DateTime?     @map("data_retention_until")
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+
+  template          InterviewTemplate  @relation(fields: [templateId], references: [id])
+  organization      Organization       @relation(fields: [orgId], references: [id])
+  consentRecord     ConsentRecord?     @relation(fields: [consentRecordId], references: [id])
   questions         Question[]
   responses         Response[]
   evaluations       Evaluation[]
-  consentRecords    ConsentRecord[]
   creditTransaction CreditTransaction?
 
   @@index([orgId])
-  @@map("interviews")
+  @@index([templateId])
+  @@map("candidate_sessions")
 }
 
 model Organization {
@@ -88,7 +137,8 @@ model Organization {
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   orgUsers           OrgUser[]
-  interviews         Interview[]
+  interviewTemplates InterviewTemplate[]
+  candidateSessions  CandidateSession[]
   creditTransactions CreditTransaction[]
 
   @@map("organizations")
@@ -102,8 +152,9 @@ model OrgUser {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  organization Organization @relation(fields: [orgId], references: [id])
-  loginOtps    LoginOtp[]
+  organization       Organization        @relation(fields: [orgId], references: [id])
+  loginOtps          LoginOtp[]
+  interviewTemplates InterviewTemplate[]
 
   @@index([orgId])
   @@map("org_users")
@@ -126,19 +177,20 @@ model LoginOtp {
 }
 
 // The credits audit trail (not just a balance counter) — every grant and
-// every per-interview deduction is a row here.
+// every per-session deduction is a row here. Deduction moved from
+// template-creation to session-creation in Phase 4.6 — see docs/DECISIONS.md.
 model CreditTransaction {
-  id          String                @id @default(uuid())
-  orgId       String                @map("org_id")
-  amount      Int
-  type        CreditTransactionType
-  interviewId String?               @unique @map("interview_id")
+  id        String                @id @default(uuid())
+  orgId     String                @map("org_id")
+  amount    Int
+  type      CreditTransactionType
+  sessionId String?               @unique @map("session_id")
   // Ops email/identifier for a grant, or "system" for an automatic deduction.
-  addedBy     String                @map("added_by")
-  createdAt   DateTime              @default(now()) @map("created_at")
+  addedBy   String                @map("added_by")
+  createdAt DateTime              @default(now()) @map("created_at")
 
-  organization Organization @relation(fields: [orgId], references: [id])
-  interview    Interview?   @relation(fields: [interviewId], references: [id])
+  organization Organization      @relation(fields: [orgId], references: [id])
+  session      CandidateSession? @relation(fields: [sessionId], references: [id])
 
   @@index([orgId])
   @@map("credit_transactions")
@@ -146,37 +198,41 @@ model CreditTransaction {
 
 model Question {
   id               String   @id @default(uuid())
-  interviewId      String   @map("interview_id")
+  sessionId        String   @map("session_id")
   orderIndex       Int      @map("order_index")
   questionText     String   @map("question_text")
-  // Model + prompt version that generated this question, for auditability.
+  // Model + prompt version that generated this question (or "manual" when
+  // copied from the template's fixed question set), for auditability.
   generatedByModel String?  @map("generated_by_model")
   createdAt        DateTime @default(now()) @map("created_at")
 
-  interview Interview  @relation(fields: [interviewId], references: [id])
+  session   CandidateSession @relation(fields: [sessionId], references: [id])
   responses Response[]
 
+  @@index([sessionId])
   @@map("questions")
 }
 
 model Response {
   id               String    @id @default(uuid())
-  interviewId      String    @map("interview_id")
+  sessionId        String    @map("session_id")
   questionId       String    @map("question_id")
   responseText     String?   @map("response_text")
   responseAudioUrl String?   @map("response_audio_url")
   submittedAt      DateTime? @map("submitted_at")
   createdAt        DateTime  @default(now()) @map("created_at")
 
-  interview Interview @relation(fields: [interviewId], references: [id])
-  question  Question  @relation(fields: [questionId], references: [id])
+  session  CandidateSession @relation(fields: [sessionId], references: [id])
+  question Question         @relation(fields: [questionId], references: [id])
 
+  @@index([sessionId])
+  @@index([questionId])
   @@map("responses")
 }
 
 model Evaluation {
   id                   String    @id @default(uuid())
-  interviewId          String    @map("interview_id")
+  sessionId            String    @map("session_id")
   overallScore         Decimal?  @map("overall_score") @db.Decimal(5, 2)
   // Structured per-criterion scores/notes.
   scorecard            Json?     @map("scorecard")
@@ -187,15 +243,15 @@ model Evaluation {
   evaluatedAt          DateTime? @map("evaluated_at")
   createdAt            DateTime  @default(now()) @map("created_at")
 
-  interview Interview @relation(fields: [interviewId], references: [id])
+  session CandidateSession @relation(fields: [sessionId], references: [id])
 
+  @@index([sessionId])
   @@map("evaluations")
 }
 
 model ConsentRecord {
   id                 String    @id @default(uuid())
   candidateId        String    @map("candidate_id")
-  interviewId        String?   @map("interview_id")
   // e.g. "data_processing", "recording", "ai_evaluation"
   consentType        String    @map("consent_type")
   // Version identifier of the consent text shown to the candidate.
@@ -205,9 +261,10 @@ model ConsentRecord {
   ipAddress          String?   @map("ip_address")
   createdAt          DateTime  @default(now()) @map("created_at")
 
-  candidate Candidate  @relation(fields: [candidateId], references: [id])
-  interview Interview? @relation(fields: [interviewId], references: [id])
+  candidate        Candidate         @relation(fields: [candidateId], references: [id])
+  candidateSession CandidateSession?
 
+  @@index([candidateId])
   @@map("consent_records")
 }
 
@@ -218,7 +275,7 @@ model AuditLog {
   actorId      String?  @map("actor_id")
   // e.g. "question_generated", "evaluation_generated", "consent_recorded"
   action       String
-  // e.g. "interview" | "evaluation" | "question" | "consent_record"
+  // e.g. "candidate_session" | "evaluation" | "question" | "consent_record"
   entityType   String   @map("entity_type")
   entityId     String?  @map("entity_id")
   modelVersion String?  @map("model_version")
@@ -228,5 +285,6 @@ model AuditLog {
   purpose      String?
   createdAt    DateTime @default(now()) @map("created_at")
 
+  @@index([entityType, entityId])
   @@map("audit_log")
 }

@@ -42,4 +42,11 @@ module.exports = {
   // stay ops-initiated, not self-serve. See docs/DECISIONS.md.
   opsApiKey: process.env.OPS_API_KEY,
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
+  // Resume file storage (Phase 4.6) — Supabase Storage, chosen to share a
+  // vendor with the Postgres DB at pilot scale. See docs/DECISIONS.md. Falls
+  // back to local disk when unset, so local dev/tests don't need a bucket.
+  supabaseUrl: process.env.SUPABASE_URL,
+  supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  supabaseResumeBucket: process.env.SUPABASE_RESUME_BUCKET || 'resumes',
+  localUploadsDir: process.env.LOCAL_UPLOADS_DIR || 'uploads',
 };

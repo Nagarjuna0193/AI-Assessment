@@ -49,12 +49,13 @@ no microservices, no premature scaling.
                                                 +------------------+
 ```
 
-Voice path (Phase 4): candidate audio -> OpenAI Whisper (STT) -> text,
-reviewed/edited by the candidate client-side -> submitted through the same
-`POST /:id/answers` used by the text flow (no separate voice answer-storage
-path). Questions -> OpenAI TTS -> audio back to the candidate, played on
-demand (no autoplay). Audio itself is never persisted — only the transcript.
-See `docs/DECISIONS.md` for the provider choice, cost, and consent design.
+Voice path (Phase 4, re-addressed by invite token in Phase 4.6): candidate
+audio -> OpenAI Whisper (STT) -> text, reviewed/edited by the candidate
+client-side -> submitted through the same `POST /api/sessions/:token/answers`
+used by the text flow (no separate voice answer-storage path). Questions ->
+OpenAI TTS -> audio back to the candidate, played on demand (no autoplay).
+Audio itself is never persisted — only the transcript. See `docs/DECISIONS.md`
+for the provider choice, cost, and consent design.
 
 ## Where consent capture and audit logging sit
 
@@ -71,59 +72,112 @@ See `docs/DECISIONS.md` for the provider choice, cost, and consent design.
 
 Schema defined in `backend/prisma/schema.prisma` (Prisma; see
 `docs/DECISIONS.md` for tooling choice), migrated via
-`backend/prisma/migrations/`. No API routes read/write this yet — schema
-only as of Phase 1.
+`backend/prisma/migrations/`.
 
 | Table | Purpose |
 |-------|---------|
-| `candidates` | Candidate identity and resume data. Carries `data_retention_until` for DPDP-driven deletion/anonymization. |
-| `interviews` | One interview session per candidate: JD text, mode (text/voice), status, timing. Also carries its own `data_retention_until`. |
-| `questions` | Interview questions generated for a given interview, in order, tagged with the generating model/prompt version for auditability. |
-| `responses` | Candidate answers to questions (text and/or audio reference), linked to both the interview and the specific question. |
-| `evaluations` | One structured evaluation/feedback report per interview: overall score, per-criterion `scorecard` JSON, summary, model version, and human-review request/notes fields. |
-| `consent_records` | DPDP consent trail: consent type, `consent_text_version`, `consent_given_at`, optional `consent_withdrawn_at`, linked to a candidate and optionally a specific interview. |
-| `audit_log` | Append-style log of AI-driven actions (question generation, evaluation) and other sensitive actions: actor, action, entity, model/prompt version, input/output references, purpose, timestamp. |
+| `candidates` | Candidate identity (by email) and DPDP retention marker. No longer the parent of interview data as of Phase 4.6 — see below. |
+| `consent_records` | DPDP consent trail: consent type, `consent_text_version`, `consent_given_at`, optional `consent_withdrawn_at`, linked to a candidate. |
+| `audit_log` | Append-style log of AI-driven actions (question generation, resume scoring, evaluation) and other sensitive actions: actor, action, entity, model/prompt version, input/output references, purpose, timestamp. |
 | `organizations` (Phase 4.5) | A client organization (recruiter/hiring team using the tool). Carries `credit_balance` (denormalized for fast reads; `credit_transactions` is the source of truth). |
 | `org_users` (Phase 4.5) | Login identity for a person at an organization: `email` (unique), `role` (`ADMIN`/`REVIEWER`), `org_id`. Provisioned by ops — no self-registration. |
 | `login_otps` (Phase 4.5) | One-time login codes for org_user email/OTP auth: hashed code, expiry, `consumed_at`. Login infrastructure, kept separate from `audit_log`. |
-| `credit_transactions` (Phase 4.5) | The credits audit trail — one row per grant or per-interview deduction: `org_id`, `amount`, `type` (`GRANT`/`DEDUCTION`), `interview_id` (deductions only), `added_by`, timestamp. `organizations.credit_balance` is always derivable by summing this table. |
+| `credit_transactions` (Phase 4.5, re-keyed in 4.6) | The credits audit trail — one row per grant or per-**session** deduction: `org_id`, `amount`, `type` (`GRANT`/`DEDUCTION`), `session_id` (deductions only), `added_by`, timestamp. `organizations.credit_balance` is always derivable by summing this table. |
+| `interview_templates` (Phase 4.6) | The JD/role a recruiter is hiring for: `role_name`, `job_id` (free-text label, not an ATS FK), `job_description_text`, `question_mode` (`AI`/`MANUAL`), `manual_questions` (JSON, MANUAL mode only), `created_by_org_user_id`. One template, many candidates. |
+| `candidate_sessions` (Phase 4.6) | One invited candidate's attempt against a template — **replaces `interviews`** as the parent of `questions`/`responses`/`evaluations`. Carries `invite_token` (the candidate's only way to address their own session), `status`, `mode` (text/voice), `resume_file_ref`/`resume_text`, `resume_jd_score`/`resume_jd_rationale`, `consent_record_id`, timing, and `data_retention_until`. |
+| `questions` / `responses` / `evaluations` | Unchanged in purpose from Phase 1/2, just re-keyed to `session_id` (was `interview_id`) — one per `candidate_session` now instead of one per `interviews` row. |
 
-`interviews.org_id` (Phase 4.5, nullable) links an interview to the organization that consumed a credit for it — `NULL` for interviews created before this phase.
+See `docs/DECISIONS.md` for the full Phase 4.6 migration rationale (why
+`interviews` was dropped rather than kept alongside sessions, why
+`consent_record_id` is left null on migrated rows, the object-storage and
+role-gating choices, etc.).
 
-## Org auth & credits (Phase 4.5)
+## Templates & candidate sessions (Phase 4.6)
 
-The candidate-facing flow (consent, interview, answers, voice) stays
+```
+Organization ──< InterviewTemplate ──< CandidateSession ──< Question ──< Response
+                 (role, JD, question_mode)   (1 per invited candidate)     │
+                                                    │                       │
+                                                    ├──< Evaluation ────────┘
+                                                    ├── resume_file_ref (Supabase Storage)
+                                                    ├── resume_jd_score / rationale
+                                                    └── consent_record_id ──> ConsentRecord
+```
+
+- **One template, many candidates.** An org admin creates an
+  `interview_templates` row once (role, JD text or file, `question_mode`)
+  via the Create Interview admin page (`POST /api/templates`, ADMIN-role
+  only — new in Phase 4.6, a real gap before now). In `MANUAL` mode the
+  fixed question set is written once, here, and shared by every candidate
+  invited to it.
+- **Inviting a candidate creates the session** (`POST /api/templates/:id/sessions`,
+  ADMIN-only) — this is also where the 1-credit deduction now happens
+  (moved from interview/template creation in Phase 4.5, so a template with
+  zero candidates costs nothing). Bulk invite is Phase 4.7, not built here;
+  this is a minimal single-candidate invite, same precedent as the Phase 4.5
+  ops-provisioning endpoints.
+- **The candidate flow is addressed entirely by `invite_token`** (opaque,
+  unguessable), never the internal session id: consent (existing, unchanged)
+  -> `POST /api/sessions/:token/start` links the resulting consent record to
+  the session -> mandatory resume upload (`POST /api/sessions/:token/resume`,
+  PDF/DOCX via `pdf-parse`/`mammoth`) -> **one** Claude call
+  (`generateSessionQuestionsAndScore`) that returns personalized questions
+  (AI mode only) plus a 0-100 resume-vs-JD score + rationale (always,
+  including MANUAL mode) -> the resulting questions (generated or copied
+  from the template's manual set) are materialized as `questions` rows on
+  the session, and the existing answer/transcript/evaluation flow proceeds
+  unchanged from there.
+- **The reviewer report is one screen.** `resume_jd_score`/`resume_jd_rationale`
+  and the interview `evaluation` both surface on the same session detail
+  page (`frontend/pages/dashboard/[id].js`) — no second dashboard view.
+
+## Org auth & credits (Phase 4.5, updated in 4.6)
+
+The candidate-facing flow (consent, resume upload, interview, voice) stays
 unauthenticated by design — candidates aren't org_users. Two things are
 gated behind org_user login instead:
 
-- **Reviewer dashboard API** (`GET /api/interviews`, `GET /api/interviews/:id`)
-  — requires a valid `org_session` JWT cookie (email/OTP login,
+- **Reviewer dashboard API** (`GET /api/interviews` — now lists templates
+  with embedded candidate-session counts/statuses; `GET /api/interviews/:id`
+  — now `:id` is a **candidate_session id**, returning template info +
+  that session's resume score, transcript, and evaluation) — requires a
+  valid `org_session` JWT cookie (email/OTP login,
   `POST /api/auth/request-otp` + `POST /api/auth/verify-otp`) and is scoped
-  to the logged-in org_user's own `org_id`. The candidate interview screen's
-  refresh-recovery moved to a new, deliberately minimal unauthenticated
-  endpoint (`GET /api/interviews/:id/progress`) so it isn't affected by this
-  gating.
-- **Credits** — `POST /api/interviews` now requires an `orgId` (sourced from
-  an `?org=` link param the recruiter shares with the candidate, not typed
-  in) and atomically deducts 1 credit from that organization's balance as
-  part of the same DB transaction that creates the interview, so the balance
-  can never go negative and a failed deduction rolls back the interview too.
-  Credits only enter the ledger via an ops-only admin endpoint
+  to the logged-in org_user's own `org_id`. The candidate's own
+  refresh-recovery uses the separate, unauthenticated
+  `GET /api/sessions/:token` instead, so it isn't affected by this gating.
+- **Credits** — deducted atomically on **candidate_session creation** (the
+  invite step, Phase 4.6 — moved from interview/template creation in
+  Phase 4.5) as part of the same DB transaction that creates the session, so
+  the balance can never go negative and a failed deduction rolls back the
+  session too. Credits only enter the ledger via an ops-only admin endpoint
   (`POST /api/admin/organizations/:orgId/credits/grant`) — there is no
   self-serve payment/checkout flow (parked, see `TODO.md`).
 
 Ops-only routes (`/api/admin/*`: creating organizations, inviting org_users,
 granting credits) are gated by a separate shared secret (`x-ops-key`
 header), not the org_user session — this is what guarantees credit grants
-stay ops-initiated rather than self-serve. See `docs/DECISIONS.md` for the
-reasoning behind these choices.
+stay ops-initiated rather than self-serve. Template creation and candidate
+invites are gated differently: they use the org_user session plus an
+ADMIN-role check (`requireOrgRole('ADMIN')`), since these are legitimately
+org-initiated actions, just restricted to a role within the org. See
+`docs/DECISIONS.md` for the reasoning behind all of these choices.
 
-## Data flow (happy path)
+## Data flow (happy path, Phase 4.6)
 
-1. Recruiter uploads JD + candidate resume.
-2. Backend calls Claude to generate interview questions from JD + resume.
-3. Candidate consents (recorded) -> interview session starts (text or voice).
-4. Candidate responses are captured as a transcript in Postgres.
-5. Backend calls Claude to evaluate the transcript against the JD.
-6. Backend generates a structured feedback report, stored in Postgres.
-7. Every LLM call in steps 2 and 5 is written to the audit log.
+1. An org ADMIN creates an interview template: role, job ID, JD (text or
+   uploaded file), and question mode (AI-personalized or a fixed manual set).
+2. The org ADMIN invites a candidate to that template — a `candidate_session`
+   is created and exactly 1 credit is deducted.
+3. The candidate opens their invite link, consents (recorded), and uploads
+   their resume.
+4. Backend calls Claude once with the JD + this candidate's resume: AI mode
+   returns personalized questions; either mode returns a resume-vs-JD score
+   + rationale.
+5. Candidate responses are captured as a transcript in Postgres, keyed to
+   the candidate_session.
+6. A reviewer (org_user) triggers evaluation; backend calls Claude to
+   evaluate the transcript against the JD.
+7. The session detail page shows the resume score/rationale and the
+   interview evaluation together — one report, not two screens.
+8. Every LLM call in steps 4 and 6 is written to the audit log.

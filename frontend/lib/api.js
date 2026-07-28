@@ -27,13 +27,11 @@ async function request(path, options = {}) {
   return data;
 }
 
-async function transcribeAnswer(interviewId, audioBlob) {
-  const formData = new FormData();
-  formData.append('audio', audioBlob, 'answer.webm');
-
-  // No Content-Type header here — the browser sets the multipart boundary.
-  const res = await fetch(`${API_BASE_URL}/api/interviews/${interviewId}/answers/transcribe`, {
-    method: 'POST',
+// Shared by any multipart upload (resume, JD file, voice answer) — no
+// Content-Type header here, the browser sets the multipart boundary.
+async function requestFormData(path, formData, method = 'POST') {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    method,
     body: formData,
     credentials: 'include',
   });
@@ -49,19 +47,38 @@ async function transcribeAnswer(interviewId, audioBlob) {
 
 export const api = {
   recordConsent: (payload) => request('/api/consent', { method: 'POST', body: payload }),
-  createInterview: (payload) => request('/api/interviews', { method: 'POST', body: payload }),
-  submitAnswer: (interviewId, payload) =>
-    request(`/api/interviews/${interviewId}/answers`, { method: 'POST', body: payload }),
-  evaluateInterview: (interviewId) =>
-    request(`/api/interviews/${interviewId}/evaluate`, { method: 'POST', body: {} }),
-  listInterviews: () => request('/api/interviews'),
-  getInterview: (interviewId) => request(`/api/interviews/${interviewId}`),
-  getInterviewProgress: (interviewId) => request(`/api/interviews/${interviewId}/progress`),
-  transcribeAnswer,
-  questionAudioUrl: (interviewId, questionId) =>
-    `${API_BASE_URL}/api/interviews/${interviewId}/questions/${questionId}/audio`,
+
+  // Auth (org_user login)
   requestOtp: (email) => request('/api/auth/request-otp', { method: 'POST', body: { email } }),
   verifyOtp: (email, code) => request('/api/auth/verify-otp', { method: 'POST', body: { email, code } }),
   logout: () => request('/api/auth/logout', { method: 'POST', body: {} }),
   me: () => request('/api/auth/me'),
+
+  // Reviewer dashboard (org-authenticated) — templates + candidate sessions
+  listTemplates: () => request('/api/interviews'),
+  getSessionDetail: (sessionId) => request(`/api/interviews/${sessionId}`),
+  evaluateSession: (sessionId) => request(`/api/interviews/${sessionId}/evaluate`, { method: 'POST', body: {} }),
+
+  // Create Interview admin page (org ADMIN only)
+  createTemplate: (formData) => requestFormData('/api/templates', formData),
+  inviteCandidate: (templateId, payload) =>
+    request(`/api/templates/${templateId}/sessions`, { method: 'POST', body: payload }),
+
+  // Candidate flow (unauthenticated, addressed by invite token)
+  getSession: (token) => request(`/api/sessions/${token}`),
+  startSession: (token, payload) => request(`/api/sessions/${token}/start`, { method: 'POST', body: payload }),
+  uploadResume: (token, file) => {
+    const formData = new FormData();
+    formData.append('resume', file);
+    return requestFormData(`/api/sessions/${token}/resume`, formData);
+  },
+  submitSessionAnswer: (token, payload) =>
+    request(`/api/sessions/${token}/answers`, { method: 'POST', body: payload }),
+  transcribeSessionAnswer: (token, audioBlob) => {
+    const formData = new FormData();
+    formData.append('audio', audioBlob, 'answer.webm');
+    return requestFormData(`/api/sessions/${token}/answers/transcribe`, formData);
+  },
+  sessionQuestionAudioUrl: (token, questionId) =>
+    `${API_BASE_URL}/api/sessions/${token}/questions/${questionId}/audio`,
 };

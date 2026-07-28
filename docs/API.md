@@ -1,11 +1,16 @@
 # API Reference
 
 Backend API for the interview flow. Base path: `/api`. All bodies/responses
-are JSON, except where noted (file upload/audio). The candidate-facing
-endpoints (`/api/consent`, `POST /api/interviews`, answers, voice) remain
-unauthenticated by design — see `docs/DECISIONS.md`. Reviewer-facing
-endpoints (`GET /api/interviews`, `GET /api/interviews/:id`) require an
-org_user session (Phase 4.5 — see "Auth" and "Credits" sections below).
+are JSON, except where noted (file upload/audio). Three groups of endpoints,
+by who calls them:
+
+- **Candidate-facing** (`/api/consent`, `/api/sessions/:token/*`) —
+  unauthenticated by design, addressed by an opaque `invite_token`. See
+  `docs/DECISIONS.md`.
+- **Reviewer/admin-facing** (`/api/interviews/*`, `/api/templates/*`) —
+  require an org_user session (Phase 4.5); template creation and candidate
+  invites additionally require the `ADMIN` role (Phase 4.6).
+- **Ops-only** (`/api/admin/*`) — a separate shared secret, never self-serve.
 
 ## `GET /health`
 
@@ -20,13 +25,13 @@ Liveness check.
 
 ## `POST /api/consent`
 
-Records DPDP consent for a candidate. Must be called — and succeed — before
-`POST /api/interviews` will allow an interview to start for that candidate.
-Creates the candidate record if one doesn't exist yet (upsert by email).
-`consentType` is a free string; the app currently checks for
-`"data_processing"` (always required) and `"voice_recording"` (required in
-addition, only when starting a `mode: "VOICE"` interview — see
-`backend/src/config.js`).
+Records DPDP consent for a candidate. Unchanged since Phase 2 — still the
+only path that may record consent, still upserts the `candidates` row by
+email. In the Phase 4.6 candidate flow it's called from the invite-link
+consent screen using the `candidateName`/`email` already on the
+candidate_session (the candidate doesn't retype them), and the resulting
+`consentRecord.id` is then passed to `POST /api/sessions/:token/start` (below)
+to link it to that session.
 
 **Request body**
 ```json
@@ -55,137 +60,283 @@ Writes an `audit_log` entry (`action: consent_recorded`).
 
 ---
 
-## `POST /api/interviews`
+## Templates (Phase 4.6, org ADMIN only)
 
-Creates an interview for a candidate: accepts JD text + resume text, calls
-Claude to generate a structured question set, and persists the interview +
-questions. **Consent is enforced here at the API level** — a candidate
-without a recorded, non-withdrawn consent record covering the required
-consent type(s) (see `backend/src/config.js`) cannot start an interview,
-regardless of what the frontend does. `mode: "VOICE"` requires an additional
-`voice_recording` consent record on top of `data_processing` — see
-`docs/DECISIONS.md`.
+An `interview_templates` row is the JD/role a recruiter is hiring for —
+created once, then many candidates are invited against it. Requires an
+`org_session` cookie **and** `role: "ADMIN"` — a `REVIEWER`-role org_user
+gets `403 forbidden`. This is the "Create Interview" admin page's backing
+endpoint; it didn't exist before Phase 4.6 (a real gap, not something
+previously deferred).
 
-**Deducts exactly 1 credit** from the given `orgId`'s balance, atomically
-with interview creation (see "Credits" below) — the interview is not created
-if the organization has no credits remaining.
+### `POST /api/templates`
 
-**Request body**
-```json
-{
-  "candidateEmail": "candidate@example.com",
-  "jobTitle": "Backend Engineer",     // optional
-  "jobDescriptionText": "...",
-  "resumeText": "...",
-  "mode": "TEXT",                      // optional — "TEXT" (default) or "VOICE"
-  "orgId": "..."                       // required — organization to credit/scope this interview to
-}
-```
+**Request**: `multipart/form-data` (so an optional JD file upload can share
+the endpoint with plain text fields) or plain JSON if no file is attached.
+
+| Field | Required | Notes |
+|---|---|---|
+| `roleName` | yes | |
+| `jobId` | no | Free-text internal label (e.g. `"REQ-1234"`) — not a foreign key, no ATS integration. |
+| `jobDescriptionText` | one of this or `jobDescriptionFile` | |
+| `jobDescriptionFile` | one of this or `jobDescriptionText` | PDF/DOCX — extracted via `pdf-parse`/`mammoth`, same parser the candidate resume upload uses. |
+| `questionMode` | no (default `AI`) | `"AI"` or `"MANUAL"`. |
+| `manualQuestions` | required if `questionMode: "MANUAL"` | JSON array of question strings (as a string field if sent via `multipart/form-data`). |
+
+**Response `201`**: `{ "template": { "id", "orgId", "roleName", "jobId", "jobDescriptionText", "questionMode", "manualQuestions", ... } }`
+
+**Errors**
+- `401 auth_required` / `403 forbidden` (non-ADMIN role)
+- `400 invalid_request` — missing `roleName`; neither JD text nor file provided; `questionMode: "MANUAL"` with no (or empty) `manualQuestions`.
+- `400 unsupported_file_type` — `jobDescriptionFile` isn't a PDF or DOCX.
+
+Not written to `audit_log` — text extraction from an uploaded file isn't an AI decision.
+
+### `POST /api/templates/:templateId/sessions`
+
+Invite **one** candidate to a template — creates the `candidate_sessions`
+row and atomically deducts 1 credit (moved here from template/interview
+creation in Phase 4.5 — a template with zero candidates now costs nothing).
+Bulk invite (many candidates at once) is Phase 4.7, not built here; see
+`docs/DECISIONS.md` for why this minimal single-invite endpoint exists now.
+
+**Request body**: `{ "candidateName": "Jane Doe", "email": "jane@example.com" }`
 
 **Response `201`**
 ```json
 {
-  "interviewId": "...",
+  "session": { "id": "...", "candidateName": "Jane Doe", "email": "...", "status": "INVITED", "inviteToken": "..." },
+  "inviteLink": "http://localhost:3000/invite/<token>"
+}
+```
+
+**Errors**
+- `401 auth_required` / `403 forbidden` (non-ADMIN role)
+- `400 invalid_request` — missing `candidateName` or `email`.
+- `404 template_not_found` — no such template, or it belongs to a different org.
+- `402 insufficient_credits` — the organization has no credits remaining.
+
+Writes a `credit_transactions` entry (`type: DEDUCTION`) referencing the new session.
+
+---
+
+## Candidate sessions (Phase 4.6, unauthenticated, addressed by `invite_token`)
+
+The entire candidate flow — consent-linking, resume upload, answering,
+voice — is addressed by the opaque `invite_token` from the invite link,
+never the internal session id reviewers use.
+
+### `GET /api/sessions/:token`
+
+Fetches session/template state — drives which screen the candidate flow
+shows (consent / resume upload / interview / complete) and recovers
+progress on a page refresh.
+
+**Response `200`**
+```json
+{
+  "status": "IN_PROGRESS",
+  "mode": "TEXT",
+  "candidateName": "Jane Doe",
+  "email": "jane@example.com",
+  "roleName": "Backend Engineer",
+  "resumeUploaded": true,
+  "transcript": [
+    { "questionId": "...", "orderIndex": 0, "questionText": "...", "responseText": "..." }
+  ]
+}
+```
+
+**Errors**
+- `404 session_not_found` — invalid or expired invite link.
+
+### `POST /api/sessions/:token/start`
+
+Called right after the (unchanged) consent screen's `POST /api/consent`
+succeeds — links that consent record to this session, records the
+candidate's chosen mode, and moves the session to `IN_PROGRESS`.
+Re-validates consent server-side the same way the old `POST /api/interviews`
+did (same consent-type-per-mode rule, see `docs/DECISIONS.md`).
+
+**Request body**: `{ "consentRecordId": "...", "mode": "TEXT" }` — `mode` optional, `"TEXT"` (default) or `"VOICE"`.
+
+**Response `200`**: `{ "status": "IN_PROGRESS" }`
+
+**Errors**
+- `400 invalid_request` — missing `consentRecordId`.
+- `404 session_not_found`
+- `409 session_not_invited` — session isn't currently `INVITED`.
+- `404 candidate_not_found`
+- `403 consent_required` — no valid consent record covering the required type(s) for the chosen mode.
+
+### `POST /api/sessions/:token/resume`
+
+Mandatory resume upload. Extracts text (`pdf-parse`/`mammoth`), stores the
+original file (Supabase Storage, or local disk in dev — see
+`docs/DECISIONS.md`), then makes **one** Claude call
+(`generateSessionQuestionsAndScore`) that returns personalized questions
+(AI mode only) plus a resume-vs-JD score + rationale (always — MANUAL mode
+still gets scored, just skips question generation). The resulting questions
+(generated, or copied from the template's fixed `manualQuestions`) are
+materialized as this session's `questions` rows.
+
+**Request**: `multipart/form-data` with a single field `resume` (PDF/DOCX).
+
+**Response `200`**
+```json
+{
   "totalQuestions": 6,
   "firstQuestion": { "id": "...", "orderIndex": 0, "questionText": "..." }
 }
 ```
 
 **Errors**
-- `400 invalid_request` — missing `candidateEmail`, `jobDescriptionText`, `resumeText`, or `orgId`.
-- `404 candidate_not_found` — no candidate record for that email; consent must be recorded first.
-- `404 organization_not_found` — no organization exists for `orgId`.
-- `403 consent_required` — candidate exists but has no valid (non-withdrawn) consent covering the required type(s) for the requested mode.
-- `402 insufficient_credits` — the organization has no credits remaining.
-- `502 question_generation_declined` — Claude declined the request (`stop_reason: "refusal"`).
-- `502 question_generation_failed` — Claude's response didn't match the expected structured-output schema.
+- `400 invalid_request` — no `resume` file attached.
+- `400 unsupported_file_type` — not a PDF or DOCX.
+- `404 session_not_found`
+- `409 session_not_in_progress` — must have completed `/start` first.
+- `409 resume_already_uploaded`
+- `502 question_generation_declined` / `502 question_generation_failed` — Claude declined, or its response didn't match the expected schema (covers both the AI-mode question+score call and the MANUAL-mode score-only call).
 
-Writes an `audit_log` entry (`action: question_generated`) recording the model version used, and a `credit_transactions` entry (`type: DEDUCTION`) referencing the new interview.
+Writes an `audit_log` entry `question_generated` (AI mode only) and always writes `resume_jd_scored`, both recording the model version used.
 
----
+### `POST /api/sessions/:token/answers`
 
-## `POST /api/interviews/:id/answers/transcribe`
+Submits a candidate's answer. Identical behavior to the old
+`POST /api/interviews/:id/answers` — returns the next question or an
+end-of-interview signal, marks the session `COMPLETED` once every question
+has a response.
 
-STT: transcribes a spoken answer to text via the voice provider (see
-`docs/DECISIONS.md`). **Does not persist a response** — it only returns the
-transcript for the candidate to review/edit client-side before submitting it
-through the existing `POST /api/interviews/:id/answers`. Only usable on an
-interview created with `mode: "VOICE"`, and re-checks `voice_recording`
-consent on every call (not just at interview creation) so a withdrawal takes
-effect immediately.
+**Request body**: `{ "questionId": "...", "responseText": "..." }`
 
-**Request**: `multipart/form-data` with a single field `audio` (the recorded
-clip, e.g. `audio/webm`).
+**Response `200` — more questions remain**: `{ "done": false, "nextQuestion": { "id", "orderIndex", "questionText" } }`
 
-**Response `200`**
-```json
-{ "text": "transcribed answer text" }
-```
+**Response `200` — interview complete**: `{ "done": true, "message": "Interview complete" }`
+
+**Errors**
+- `400 invalid_request` — missing `questionId` or `responseText`.
+- `404 session_not_found`
+- `409 session_not_in_progress`
+- `404 question_not_found` — doesn't exist, or doesn't belong to this session.
+- `409 already_answered`
+
+### `POST /api/sessions/:token/answers/transcribe`
+
+STT — identical behavior to the old (Phase 4) voice-transcribe endpoint,
+just session/token-scoped now. Does not persist a response.
+
+**Request**: `multipart/form-data`, field `audio`.
+
+**Response `200`**: `{ "text": "transcribed answer text" }`
 
 **Errors**
 - `400 invalid_request` — no `audio` file attached.
-- `404 interview_not_found`
-- `409 interview_not_in_progress`
-- `403 voice_not_enabled` — the interview was not started with `mode: "VOICE"`.
-- `403 voice_consent_required` — candidate has no valid (non-withdrawn) `voice_recording` consent.
-- `502 stt_failed` — the STT provider request failed.
+- `404 session_not_found`
+- `409 session_not_in_progress`
+- `403 voice_not_enabled` — session wasn't started with `mode: "VOICE"`.
+- `403 voice_consent_required`
+- `502 stt_failed`
 
-Writes an `audit_log` entry (`action: voice_answer_transcribed`) recording the model version used. The audio itself is never persisted — only the resulting text (once the candidate submits it via the normal answers endpoint) is stored.
+Writes an `audit_log` entry (`action: voice_answer_transcribed`).
 
----
+### `GET /api/sessions/:token/questions/:questionId/audio`
 
-## `GET /api/interviews/:id/questions/:questionId/audio`
-
-TTS: synthesizes the given question's text so it can be read aloud to the
-candidate (see `docs/DECISIONS.md`). Available regardless of interview mode.
+TTS — identical behavior to the old (Phase 4) endpoint, session/token-scoped.
 
 **Response `200`**: `audio/mpeg` binary body.
 
 **Errors**
-- `404 question_not_found` — no such question, or it doesn't belong to `:id`.
-- `502 tts_failed` — the TTS provider request failed.
+- `404 session_not_found` / `404 question_not_found`
+- `502 tts_failed`
 
-Not written to `audit_log` — TTS only reads back question text that was
-already generated (and logged) at interview creation; it doesn't process any
-candidate personal data.
+Not written to `audit_log` (same reasoning as before — no candidate personal data involved).
 
 ---
 
-## `POST /api/interviews/:id/answers`
+## `GET /api/interviews`
 
-Submits a candidate's answer to a question. Returns either the next question
-or an end-of-interview signal. Marks the interview `COMPLETED` once every
-question has a response.
+Lists **interview templates** belonging to the logged-in org_user's
+organization, most recent first, each with its candidate sessions embedded
+(counts, per-status breakdown, and a summary array) so the reviewer
+dashboard's "expandable to candidate sessions" list needs one request.
+**Breaking change from Phase 2**: this used to list flat interviews — see
+`docs/DECISIONS.md`. **Requires an org_user session** (any role).
 
-**Request body**
+**Errors**
+- `401 auth_required`
+
+**Response `200`**
 ```json
-{ "questionId": "...", "responseText": "..." }
+{
+  "templates": [
+    {
+      "id": "...",
+      "roleName": "Backend Engineer",
+      "jobId": "REQ-1",
+      "questionMode": "AI",
+      "createdAt": "...",
+      "sessionCount": 2,
+      "statusCounts": { "COMPLETED": 1, "INVITED": 1 },
+      "sessions": [
+        {
+          "id": "...",
+          "candidateName": "Jane Doe",
+          "email": "jane@example.com",
+          "status": "COMPLETED",
+          "resumeJdScore": 82,
+          "createdAt": "...",
+          "evaluationScore": 78
+        }
+      ]
+    }
+  ]
+}
 ```
 
-**Response `200` — more questions remain**
-```json
-{ "done": false, "nextQuestion": { "id": "...", "orderIndex": 1, "questionText": "..." } }
-```
+---
 
-**Response `200` — interview complete**
+## `GET /api/interviews/:id`
+
+Fetches one **candidate session** (`:id` is a `candidate_sessions` id, not a
+template id) plus its template info, resume score, transcript, and
+evaluation. **Breaking change from Phase 2**: this used to return one flat
+interview — see `docs/DECISIONS.md`. **Requires an org_user session**; a
+session belonging to a different organization returns `404`, not `403`, so
+its existence isn't leaked across orgs.
+
+**Response `200`**
 ```json
-{ "done": true, "message": "Interview complete" }
+{
+  "template": {
+    "id": "...", "roleName": "Backend Engineer", "jobId": "REQ-1",
+    "jobDescriptionText": "...", "questionMode": "AI"
+  },
+  "session": {
+    "id": "...", "candidateName": "Jane Doe", "email": "...",
+    "status": "COMPLETED", "mode": "TEXT",
+    "resumeJdScore": 82, "resumeJdRationale": "...",
+    "createdAt": "...", "completedAt": "..."
+  },
+  "transcript": [
+    { "questionId": "...", "orderIndex": 0, "questionText": "...", "responseText": "..." }
+  ],
+  "evaluation": { "id": "...", "overallScore": 78, "summaryText": "...", "scorecard": [...] } // or null
+}
 ```
 
 **Errors**
-- `400 invalid_request` — missing `questionId` or `responseText`.
-- `404 interview_not_found`
-- `409 interview_not_in_progress` — interview is not currently `IN_PROGRESS` (e.g. already completed).
-- `404 question_not_found` — `questionId` doesn't exist or doesn't belong to this interview.
-- `409 already_answered` — this question already has a recorded response.
+- `401 auth_required`
+- `404 session_not_found` — no such session, or it belongs to a different organization.
 
 ---
 
 ## `POST /api/interviews/:id/evaluate`
 
-Triggers evaluation of a completed interview's full transcript: calls Claude
-with the JD + all question/answer pairs, and stores the structured score +
-feedback.
+Triggers evaluation of a completed session's full transcript: calls Claude
+with the template's JD + all question/answer pairs, and stores the
+structured score + feedback. Unchanged in behavior from Phase 2, just
+re-keyed to a candidate_session id. **Requires an org_user session** (any
+role — evaluation isn't ADMIN-restricted).
 
 **Request body:** none required.
 
@@ -194,7 +345,7 @@ feedback.
 {
   "evaluation": {
     "id": "...",
-    "interviewId": "...",
+    "sessionId": "...",
     "overallScore": 78,
     "summaryText": "...",
     "scorecard": [
@@ -207,104 +358,12 @@ feedback.
 ```
 
 **Errors**
-- `404 interview_not_found`
-- `409 interview_not_complete` — not all questions have been answered yet (interview status isn't `COMPLETED`).
-- `502 evaluation_declined` — Claude declined the request.
-- `502 evaluation_failed` — Claude's response didn't match the expected structured-output schema.
+- `401 auth_required`
+- `404 session_not_found`
+- `409 session_not_complete` — not all questions have been answered yet.
+- `502 evaluation_declined` / `502 evaluation_failed`
 
-Writes an `audit_log` entry (`action: evaluation_generated`) recording the model version used.
-
----
-
-## `GET /api/interviews`
-
-Lists interviews belonging to the logged-in org_user's organization, most
-recent first. Used by the reviewer dashboard (Phase 3). **Requires an
-org_user session** (Phase 4.5 — see "Auth" below); scoped by `orgId` so one
-organization can never see another's interviews.
-
-**Errors**
-- `401 auth_required` — no valid session cookie.
-
-**Response `200`**
-```json
-{
-  "interviews": [
-    {
-      "id": "...",
-      "jobTitle": "Backend Engineer",
-      "mode": "TEXT",
-      "status": "COMPLETED",
-      "createdAt": "...",
-      "candidate": { "id": "...", "fullName": "Jane Doe", "email": "..." },
-      "evaluation": { "overallScore": 78 } // or null if not yet evaluated
-    }
-  ]
-}
-```
-
----
-
-## `GET /api/interviews/:id`
-
-Fetches a single interview's full transcript and (if present) evaluation.
-Used by the reviewer dashboard to show the Q&A transcript alongside the
-score/feedback. **Requires an org_user session**; an interview belonging to
-a different organization (or with no `orgId`, e.g. pre-Phase-4.5 data)
-returns `404`, not `403`, so its existence isn't leaked across orgs.
-
-Note: the candidate-facing interview screen now uses the new
-`GET /api/interviews/:id/progress` (below) for refresh-recovery instead,
-since this endpoint is no longer reachable without an org_user session — see
-`docs/DECISIONS.md`.
-
-**Response `200`**
-```json
-{
-  "interview": {
-    "id": "...",
-    "jobTitle": "Backend Engineer",
-    "jobDescriptionText": "...",
-    "mode": "TEXT",
-    "status": "COMPLETED",
-    "createdAt": "...",
-    "completedAt": "...",
-    "candidate": { "id": "...", "fullName": "Jane Doe", "email": "..." }
-  },
-  "transcript": [
-    { "questionId": "...", "orderIndex": 0, "questionText": "...", "responseText": "..." }
-  ],
-  "evaluation": { "id": "...", "overallScore": 78, "summaryText": "...", "scorecard": [...] } // or null
-}
-```
-
-**Errors**
-- `401 auth_required` — no valid session cookie.
-- `404 interview_not_found` — no such interview, or it belongs to a different organization.
-
----
-
-## `GET /api/interviews/:id/progress`
-
-Candidate-facing, **unauthenticated** progress recovery — used by the
-candidate interview screen to resume after a page refresh. Deliberately
-minimal: no `jobDescriptionText`, no candidate PII, no evaluation — just
-enough to redraw the current question and progress bar. Introduced in
-Phase 4.5 when `GET /api/interviews/:id` (above) became org-auth-gated; see
-`docs/DECISIONS.md`.
-
-**Response `200`**
-```json
-{
-  "interview": { "id": "...", "jobTitle": "Backend Engineer", "mode": "TEXT", "status": "IN_PROGRESS" },
-  "transcript": [
-    { "questionId": "...", "orderIndex": 0, "questionText": "...", "responseText": "..." }
-  ]
-}
-```
-
-**Errors**
-- `404 interview_not_found`
+Writes an `audit_log` entry (`action: evaluation_generated`).
 
 ---
 
@@ -368,7 +427,8 @@ All routes under `/api/admin` require an `x-ops-key` header matching the
 `OPS_API_KEY` env var — a separate secret from org_user auth, so these
 actions can only be triggered by the team operating the pilot, never
 self-serve by an org (see `docs/DECISIONS.md`). Not exposed in any frontend
-UI; called directly (e.g. via `curl`/Postman) by ops.
+UI; called directly (e.g. via `curl`/Postman) by ops. (Contrast with
+"Templates" above, which *is* org-initiated — just role-gated to `ADMIN`.)
 
 ### `POST /api/admin/organizations`
 
@@ -408,9 +468,12 @@ ledger in this phase (no payment gateway/checkout; parked for later, see
 
 ## Notes
 
-- Every Claude call (question generation, evaluation) uses structured
+- Every Claude call (question/score generation, evaluation) uses structured
   output (`output_config.format` with a Zod schema via `messages.parse()`)
   rather than free-text parsing, so a malformed response is caught and
   surfaced as `502`, not silently stored.
 - Default model: `claude-opus-5` (overridable via `ANTHROPIC_MODEL`) — see
   `docs/DECISIONS.md` for the cost/quality tradeoff note.
+- Resume/JD file text extraction (`pdf-parse` for PDF, `mammoth` for DOCX)
+  is shared between the candidate resume upload and the admin JD file
+  upload — see `backend/src/services/resumeParserService.js`.

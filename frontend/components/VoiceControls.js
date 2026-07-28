@@ -4,7 +4,7 @@ import { api, ApiError } from '../lib/api';
 // Voice is an alternative input/output for the existing text answer flow:
 // recording fills the same textarea (via onTranscribed) rather than
 // submitting directly, and any failure here just leaves typing available.
-export default function VoiceControls({ interviewId, questionId, onTranscribed, disabled }) {
+export default function VoiceControls({ token, questionId, onTranscribed, disabled }) {
   const [supported, setSupported] = useState(false);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -40,7 +40,7 @@ export default function VoiceControls({ interviewId, questionId, onTranscribed, 
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
         setTranscribing(true);
         try {
-          const { text } = await api.transcribeAnswer(interviewId, blob);
+          const { text } = await api.transcribeSessionAnswer(token, blob);
           onTranscribed(text);
         } catch (err) {
           setError(
@@ -70,7 +70,7 @@ export default function VoiceControls({ interviewId, questionId, onTranscribed, 
   const playQuestion = () => {
     setError(null);
     if (!audioElRef.current) return;
-    audioElRef.current.src = api.questionAudioUrl(interviewId, questionId);
+    audioElRef.current.src = api.sessionQuestionAudioUrl(token, questionId);
     setPlaying(true);
     audioElRef.current.play().catch(() => {
       setPlaying(false);

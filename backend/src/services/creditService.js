@@ -7,11 +7,13 @@ class InsufficientCreditsError extends Error {
   }
 }
 
-// Deducts exactly 1 credit for `interviewId` and records the transaction, in
-// the same DB transaction as the caller's interview creation — so a failed
-// deduction rolls back the interview too, and the balance can never go
+// Deducts exactly 1 credit for `sessionId` and records the transaction, in
+// the same DB transaction as the caller's candidate_session creation — so a
+// failed deduction rolls back the session too, and the balance can never go
 // negative (the conditional WHERE only matches rows with balance > 0).
-async function deductCreditForInterview(tx, orgId, interviewId) {
+// Phase 4.6 moved this from interview/template creation to session (i.e.
+// candidate invite) creation — see docs/DECISIONS.md.
+async function deductCreditForSession(tx, orgId, sessionId) {
   const result = await tx.organization.updateMany({
     where: { id: orgId, creditBalance: { gt: 0 } },
     data: { creditBalance: { decrement: 1 } },
@@ -26,7 +28,7 @@ async function deductCreditForInterview(tx, orgId, interviewId) {
       orgId,
       amount: 1,
       type: 'DEDUCTION',
-      interviewId,
+      sessionId,
       addedBy: 'system',
     },
   });
@@ -42,11 +44,11 @@ async function grantCredits(orgId, amount, addedBy) {
     });
 
     await tx.creditTransaction.create({
-      data: { orgId, amount, type: 'GRANT', interviewId: null, addedBy },
+      data: { orgId, amount, type: 'GRANT', sessionId: null, addedBy },
     });
 
     return org;
   });
 }
 
-module.exports = { deductCreditForInterview, grantCredits, InsufficientCreditsError };
+module.exports = { deductCreditForSession, grantCredits, InsufficientCreditsError };

@@ -18,8 +18,11 @@ AI) of the InterviewDesk platform — not a full ATS/interview platform.
   candidates
 - India-only, pilot scale (50–100 interviews over ~3 months)
 - Enterprise org auth (email/OTP) and an internal credit ledger — one credit
-  consumed per interview, manually granted by ops (Phase 4.5 — see
+  consumed per invited candidate, manually granted by ops (Phase 4.5 — see
   `docs/DECISIONS.md`)
+- Interview templates (role + JD, reusable across candidates) with either
+  AI-personalized or fixed manual questions, plus an LLM-generated
+  resume-vs-JD fit score alongside the interview evaluation (Phase 4.6)
 
 **Out of scope (v1)**
 - AI avatar / video generation

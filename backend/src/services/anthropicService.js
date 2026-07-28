@@ -5,7 +5,10 @@ const config = require('../config');
 
 const client = new Anthropic({ apiKey: config.anthropicApiKey });
 
-const QuestionSetSchema = z.object({
+// AI-mode session start: personalized questions + resume-vs-JD score in one
+// call (see docs/DECISIONS.md — this is what makes questions personalized
+// to each candidate's actual resume, per Phase 4.6).
+const SessionQuestionsAndScoreSchema = z.object({
   questions: z
     .array(
       z.object({
@@ -13,6 +16,15 @@ const QuestionSetSchema = z.object({
       })
     )
     .min(1),
+  resumeJdScore: z.number().min(0).max(100),
+  resumeJdRationale: z.string(),
+});
+
+// MANUAL-mode session start: questions are fixed on the template, but the
+// resume is still worth scoring against the JD.
+const ResumeScoreOnlySchema = z.object({
+  resumeJdScore: z.number().min(0).max(100),
+  resumeJdRationale: z.string(),
 });
 
 const EvaluationSchema = z.object({
@@ -42,19 +54,31 @@ class AnthropicParseError extends Error {
   }
 }
 
-async function generateQuestions(jobDescriptionText, resumeText) {
+// One call per candidate session, per Phase 4.6: AI mode returns
+// personalized questions + a resume-vs-JD score; MANUAL mode returns only
+// the score (questions are already fixed on the template).
+async function generateSessionQuestionsAndScore(jobDescriptionText, resumeText, questionMode) {
+  const isAiMode = questionMode === 'AI';
+  const schema = isAiMode ? SessionQuestionsAndScoreSchema : ResumeScoreOnlySchema;
+
+  const system = isAiMode
+    ? 'You do two things from a job description and a candidate resume: (1) generate 5-8 ' +
+      'personalized interview questions that probe this specific candidate\'s relevant ' +
+      'experience, skills gaps, and role fit, and (2) score how well the resume matches ' +
+      'the job description from 0-100 with a short evidence-based rationale. Do not ' +
+      'include preamble or commentary outside the structured output.'
+    : 'You score how well a candidate resume matches a job description, from 0-100, with ' +
+      'a short evidence-based rationale. Do not include preamble or commentary outside ' +
+      'the structured output.';
+
   const response = await client.messages.parse({
     model: config.anthropicModel,
     max_tokens: 4096,
     output_config: {
       effort: 'medium',
-      format: zodOutputFormat(QuestionSetSchema),
+      format: zodOutputFormat(schema),
     },
-    system:
-      'You generate structured interview questions for a candidate based on a job ' +
-      'description and resume. Generate 5-8 questions that probe relevant experience, ' +
-      'skills gaps, and role fit. Do not include preamble or commentary outside the ' +
-      'structured output.',
+    system,
     messages: [
       {
         role: 'user',
@@ -67,11 +91,13 @@ async function generateQuestions(jobDescriptionText, resumeText) {
     throw new AnthropicRefusalError(response.stop_details && response.stop_details.category);
   }
   if (!response.parsed_output) {
-    throw new AnthropicParseError('Claude response did not match the expected question schema');
+    throw new AnthropicParseError('Claude response did not match the expected schema');
   }
 
   return {
-    questions: response.parsed_output.questions,
+    questions: isAiMode ? response.parsed_output.questions : null,
+    resumeJdScore: response.parsed_output.resumeJdScore,
+    resumeJdRationale: response.parsed_output.resumeJdRationale,
     model: response.model,
   };
 }
@@ -118,7 +144,7 @@ async function evaluateTranscript(jobDescriptionText, transcript) {
 }
 
 module.exports = {
-  generateQuestions,
+  generateSessionQuestionsAndScore,
   evaluateTranscript,
   AnthropicRefusalError,
   AnthropicParseError,

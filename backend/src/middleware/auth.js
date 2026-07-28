@@ -19,6 +19,17 @@ function requireOrgAuth(req, res, next) {
   }
 }
 
+// Gates a route to a specific org_user role (e.g. ADMIN for creating
+// templates/inviting candidates). Must run after requireOrgAuth.
+function requireOrgRole(role) {
+  return (req, res, next) => {
+    if (!req.orgUser || req.orgUser.role !== role) {
+      return res.status(403).json({ error: 'forbidden', message: `${role} role required` });
+    }
+    next();
+  };
+}
+
 // Gates ops-only routes (org/org_user provisioning, credit grants) — a
 // shared secret, deliberately separate from org-user auth so an org admin
 // can never grant their own org credits. See docs/DECISIONS.md.
@@ -30,4 +41,4 @@ function requireOpsKey(req, res, next) {
   next();
 }
 
-module.exports = { requireOrgAuth, requireOpsKey };
+module.exports = { requireOrgAuth, requireOrgRole, requireOpsKey };

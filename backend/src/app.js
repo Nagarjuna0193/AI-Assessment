@@ -6,6 +6,8 @@ const consentRoutes = require('./routes/consentRoutes');
 const interviewRoutes = require('./routes/interviewRoutes');
 const authRoutes = require('./routes/authRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const templateRoutes = require('./routes/templateRoutes');
+const sessionRoutes = require('./routes/sessionRoutes');
 
 const app = express();
 
@@ -21,6 +23,8 @@ app.use('/api/consent', consentRoutes);
 app.use('/api/interviews', interviewRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/templates', templateRoutes);
+app.use('/api/sessions', sessionRoutes);
 
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
