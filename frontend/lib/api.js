@@ -13,6 +13,9 @@ async function request(path, options = {}) {
     method: options.method || 'GET',
     headers: { 'Content-Type': 'application/json' },
     body: options.body ? JSON.stringify(options.body) : undefined,
+    // Needed so the org_session cookie (set by /api/auth/verify-otp) is sent
+    // back on the reviewer dashboard's requests to the API origin.
+    credentials: 'include',
   });
 
   const contentType = res.headers.get('content-type') || '';
@@ -32,6 +35,7 @@ async function transcribeAnswer(interviewId, audioBlob) {
   const res = await fetch(`${API_BASE_URL}/api/interviews/${interviewId}/answers/transcribe`, {
     method: 'POST',
     body: formData,
+    credentials: 'include',
   });
 
   const contentType = res.headers.get('content-type') || '';
@@ -52,7 +56,12 @@ export const api = {
     request(`/api/interviews/${interviewId}/evaluate`, { method: 'POST', body: {} }),
   listInterviews: () => request('/api/interviews'),
   getInterview: (interviewId) => request(`/api/interviews/${interviewId}`),
+  getInterviewProgress: (interviewId) => request(`/api/interviews/${interviewId}/progress`),
   transcribeAnswer,
   questionAudioUrl: (interviewId, questionId) =>
     `${API_BASE_URL}/api/interviews/${interviewId}/questions/${questionId}/audio`,
+  requestOtp: (email) => request('/api/auth/request-otp', { method: 'POST', body: { email } }),
+  verifyOtp: (email, code) => request('/api/auth/verify-otp', { method: 'POST', body: { email, code } }),
+  logout: () => request('/api/auth/logout', { method: 'POST', body: {} }),
+  me: () => request('/api/auth/me'),
 };

@@ -1,7 +1,11 @@
 # API Reference
 
 Backend API for the interview flow. Base path: `/api`. All bodies/responses
-are JSON. No auth middleware yet (still open from Phase 1/2 — see `TODO.md`).
+are JSON, except where noted (file upload/audio). The candidate-facing
+endpoints (`/api/consent`, `POST /api/interviews`, answers, voice) remain
+unauthenticated by design — see `docs/DECISIONS.md`. Reviewer-facing
+endpoints (`GET /api/interviews`, `GET /api/interviews/:id`) require an
+org_user session (Phase 4.5 — see "Auth" and "Credits" sections below).
 
 ## `GET /health`
 
@@ -62,6 +66,10 @@ regardless of what the frontend does. `mode: "VOICE"` requires an additional
 `voice_recording` consent record on top of `data_processing` — see
 `docs/DECISIONS.md`.
 
+**Deducts exactly 1 credit** from the given `orgId`'s balance, atomically
+with interview creation (see "Credits" below) — the interview is not created
+if the organization has no credits remaining.
+
 **Request body**
 ```json
 {
@@ -69,7 +77,8 @@ regardless of what the frontend does. `mode: "VOICE"` requires an additional
   "jobTitle": "Backend Engineer",     // optional
   "jobDescriptionText": "...",
   "resumeText": "...",
-  "mode": "TEXT"                       // optional — "TEXT" (default) or "VOICE"
+  "mode": "TEXT",                      // optional — "TEXT" (default) or "VOICE"
+  "orgId": "..."                       // required — organization to credit/scope this interview to
 }
 ```
 
@@ -83,13 +92,15 @@ regardless of what the frontend does. `mode: "VOICE"` requires an additional
 ```
 
 **Errors**
-- `400 invalid_request` — missing `candidateEmail`, `jobDescriptionText`, or `resumeText`.
+- `400 invalid_request` — missing `candidateEmail`, `jobDescriptionText`, `resumeText`, or `orgId`.
 - `404 candidate_not_found` — no candidate record for that email; consent must be recorded first.
+- `404 organization_not_found` — no organization exists for `orgId`.
 - `403 consent_required` — candidate exists but has no valid (non-withdrawn) consent covering the required type(s) for the requested mode.
+- `402 insufficient_credits` — the organization has no credits remaining.
 - `502 question_generation_declined` — Claude declined the request (`stop_reason: "refusal"`).
 - `502 question_generation_failed` — Claude's response didn't match the expected structured-output schema.
 
-Writes an `audit_log` entry (`action: question_generated`) recording the model version used.
+Writes an `audit_log` entry (`action: question_generated`) recording the model version used, and a `credit_transactions` entry (`type: DEDUCTION`) referencing the new interview.
 
 ---
 
@@ -207,8 +218,13 @@ Writes an `audit_log` entry (`action: evaluation_generated`) recording the model
 
 ## `GET /api/interviews`
 
-Lists all interviews, most recent first. Used by the reviewer dashboard
-(Phase 3). Read-only — no auth yet (see `docs/DECISIONS.md`).
+Lists interviews belonging to the logged-in org_user's organization, most
+recent first. Used by the reviewer dashboard (Phase 3). **Requires an
+org_user session** (Phase 4.5 — see "Auth" below); scoped by `orgId` so one
+organization can never see another's interviews.
+
+**Errors**
+- `401 auth_required` — no valid session cookie.
 
 **Response `200`**
 ```json
@@ -233,8 +249,14 @@ Lists all interviews, most recent first. Used by the reviewer dashboard
 
 Fetches a single interview's full transcript and (if present) evaluation.
 Used by the reviewer dashboard to show the Q&A transcript alongside the
-score/feedback, and by the candidate-facing interview screen to recover
-in-progress state on page reload.
+score/feedback. **Requires an org_user session**; an interview belonging to
+a different organization (or with no `orgId`, e.g. pre-Phase-4.5 data)
+returns `404`, not `403`, so its existence isn't leaked across orgs.
+
+Note: the candidate-facing interview screen now uses the new
+`GET /api/interviews/:id/progress` (below) for refresh-recovery instead,
+since this endpoint is no longer reachable without an org_user session — see
+`docs/DECISIONS.md`.
 
 **Response `200`**
 ```json
@@ -257,7 +279,130 @@ in-progress state on page reload.
 ```
 
 **Errors**
+- `401 auth_required` — no valid session cookie.
+- `404 interview_not_found` — no such interview, or it belongs to a different organization.
+
+---
+
+## `GET /api/interviews/:id/progress`
+
+Candidate-facing, **unauthenticated** progress recovery — used by the
+candidate interview screen to resume after a page refresh. Deliberately
+minimal: no `jobDescriptionText`, no candidate PII, no evaluation — just
+enough to redraw the current question and progress bar. Introduced in
+Phase 4.5 when `GET /api/interviews/:id` (above) became org-auth-gated; see
+`docs/DECISIONS.md`.
+
+**Response `200`**
+```json
+{
+  "interview": { "id": "...", "jobTitle": "Backend Engineer", "mode": "TEXT", "status": "IN_PROGRESS" },
+  "transcript": [
+    { "questionId": "...", "orderIndex": 0, "questionText": "...", "responseText": "..." }
+  ]
+}
+```
+
+**Errors**
 - `404 interview_not_found`
+
+---
+
+## Auth (Phase 4.5)
+
+Org_user login: email/OTP, session held as a JWT in an httpOnly cookie
+(`org_session`). Org_users are provisioned by ops (see "Admin" below) — there
+is no self-serve sign-up. See `docs/DECISIONS.md` for the JWT-vs-session-store
+choice.
+
+### `POST /api/auth/request-otp`
+
+**Request body**: `{ "email": "reviewer@company.com" }`
+
+**Response `200`**: `{ "message": "OTP sent" }`
+
+**Errors**
+- `400 invalid_request` — missing `email`.
+- `404 org_user_not_found`
+
+In dev/test (no `AUTH_EMAIL_PROVIDER_API_KEY` configured), the OTP is logged
+to the console instead of emailed — see `docs/DECISIONS.md`.
+
+### `POST /api/auth/verify-otp`
+
+**Request body**: `{ "email": "...", "code": "123456" }`
+
+**Response `200`**: sets the `org_session` cookie; body is
+`{ "orgUser": { "id", "email", "orgId", "role" } }`.
+
+**Errors**
+- `400 invalid_request` — missing `email` or `code`.
+- `404 org_user_not_found`
+- `401 otp_expired_or_invalid` — no matching unconsumed OTP, it's expired, or the code is wrong.
+
+### `POST /api/auth/logout`
+
+Clears the session cookie. **Response `200`**: `{ "message": "Logged out" }`
+
+### `GET /api/auth/me`
+
+Current session's org_user + organization (for the dashboard header/credit
+display). **Requires an org_user session.**
+
+**Response `200`**
+```json
+{
+  "orgUser": { "id": "...", "email": "...", "role": "REVIEWER" },
+  "organization": { "id": "...", "name": "...", "creditBalance": 12 }
+}
+```
+
+**Errors**
+- `401 auth_required`
+
+---
+
+## Admin / ops (Phase 4.5)
+
+All routes under `/api/admin` require an `x-ops-key` header matching the
+`OPS_API_KEY` env var — a separate secret from org_user auth, so these
+actions can only be triggered by the team operating the pilot, never
+self-serve by an org (see `docs/DECISIONS.md`). Not exposed in any frontend
+UI; called directly (e.g. via `curl`/Postman) by ops.
+
+### `POST /api/admin/organizations`
+
+Provision a new client organization (starts with 0 credits).
+
+**Request body**: `{ "name": "Acme Corp" }`
+
+**Response `201`**: `{ "organization": { "id", "name", "creditBalance": 0, ... } }`
+
+### `POST /api/admin/organizations/:orgId/users`
+
+Invite an org_user (no self-registration).
+
+**Request body**: `{ "email": "reviewer@acme.com", "role": "REVIEWER" }` — `role` optional, `"ADMIN"` or `"REVIEWER"` (default).
+
+**Response `201`**: `{ "orgUser": { "id", "email", "orgId", "role", ... } }`
+
+**Errors**
+- `400 invalid_request` — missing `email`, or invalid `role`.
+- `404 organization_not_found`
+
+### `POST /api/admin/organizations/:orgId/credits/grant`
+
+Manually grant credits to an organization — the only way credits enter the
+ledger in this phase (no payment gateway/checkout; parked for later, see
+`TODO.md`). Records a `credit_transactions` row (`type: GRANT`).
+
+**Request body**: `{ "amount": 50, "addedBy": "ops@ourcompany.com" }`
+
+**Response `201`**: `{ "organization": { "id", "name", "creditBalance", ... } }`
+
+**Errors**
+- `400 invalid_request` — `amount` not a positive integer, or missing `addedBy`.
+- `404 organization_not_found`
 
 ---
 

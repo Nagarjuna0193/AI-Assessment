@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/router';
 import Link from 'next/link';
 import Layout from '../../components/Layout';
+import RequireAuth from '../../components/RequireAuth';
 import { api, ApiError } from '../../lib/api';
 
 const STATUS_STYLES = {
@@ -10,6 +12,11 @@ const STATUS_STYLES = {
 };
 
 export default function DashboardPage() {
+  return <RequireAuth>{(auth) => <DashboardContent auth={auth} />}</RequireAuth>;
+}
+
+function DashboardContent({ auth }) {
+  const router = useRouter();
   const [interviews, setInterviews] = useState(null);
   const [error, setError] = useState(null);
 
@@ -20,8 +27,22 @@ export default function DashboardPage() {
       .catch((err) => setError(err instanceof ApiError ? err.message : 'Could not load interviews.'));
   }, []);
 
+  const handleLogout = async () => {
+    await api.logout();
+    router.push('/login');
+  };
+
   return (
-    <Layout>
+    <Layout
+      accountInfo={
+        <span className="text-sm text-slate-500 flex items-center gap-3">
+          {auth.organization.name} · {auth.organization.creditBalance} credits
+          <button onClick={handleLogout} className="text-slate-500 hover:text-slate-800 underline">
+            Log out
+          </button>
+        </span>
+      }
+    >
       <h1 className="text-2xl font-semibold mb-6">Interviews</h1>
 
       {error && <p className="text-red-600 text-sm mb-4">{error}</p>}

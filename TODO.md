@@ -1,6 +1,6 @@
 # TODO / Phase Checklist
 
-Current phase: **Phase 4 — voice input/output layer done**
+Current phase: **Phase 4.5 — enterprise auth & credits module done**
 
 See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 
@@ -84,6 +84,39 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
       (`backend/tests/voice.test.js`, additions to
       `backend/tests/interviews.test.js`) — 28/28 passing
 
+## Phase 4.5 — Enterprise auth & credits module
+- [x] Data model: `organizations` (name, credit_balance), `org_users`
+      (email, org_id, role: admin/reviewer), `credit_transactions` (audit
+      trail for grants/deductions), `interviews.org_id` FK — migration only
+      (`backend/prisma/migrations/20260728010000_org_auth_credits/`)
+- [x] Org_user auth: email/OTP, JWT session in an httpOnly cookie —
+      `POST /api/auth/request-otp`, `POST /api/auth/verify-otp`,
+      `POST /api/auth/logout`, `GET /api/auth/me`
+      (`backend/src/routes/authRoutes.js`, `backend/src/services/authService.js`,
+      `backend/src/services/emailService.js`)
+- [x] Credits ledger: 1 credit deducted atomically per interview created
+      (`POST /api/interviews` now requires `orgId`; `402 insufficient_credits`
+      if the org has none — balance can never go negative)
+      (`backend/src/services/creditService.js`)
+- [x] Ops-only admin endpoints (separate `OPS_API_KEY`, not org_user auth —
+      never self-serve): create organization, invite org_user, grant credits
+      (`backend/src/routes/adminRoutes.js`)
+- [x] `GET /api/interviews` and `GET /api/interviews/:id` now require
+      org_user login and are scoped to the caller's own org — closes the
+      open-to-anyone gap noted in Phase 2/3
+- [x] New unauthenticated `GET /api/interviews/:id/progress` (minimal
+      job title/mode/status + transcript) so the candidate interview
+      screen's refresh-recovery still works now that `GET /:id` is
+      auth-gated
+- [x] Frontend: reviewer login page (`frontend/pages/login.js`), dashboard
+      gated via `RequireAuth`, org name/credit balance + logout in the
+      dashboard header; candidate setup screen now requires an `?org=`
+      link param and sends it as `orgId`
+- [x] Backend tests: `backend/tests/auth.test.js`, `backend/tests/credits.test.js`,
+      plus org/credit updates to `backend/tests/interviews.test.js` — 54/54 passing
+- [ ] Self-serve payment/checkout flow for credits — explicitly out of
+      scope this phase (see "Parked for later")
+
 ## Phase 5 — Evaluation
 - [ ] Claude-based transcript evaluation against JD
 - [ ] Structured feedback report generation
@@ -104,7 +137,13 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 
 ## Parked for later
 - AI avatar / video generation
-- Multi-tenant billing
+- Self-serve payment/checkout flow for credits (billing UI, card processing,
+  invoicing) — Phase 4.5 built the internal credit ledger + ops-only manual
+  grant endpoint only; org admins still cannot grant themselves credits
 - Full proctoring (beyond tab-switch/fullscreen)
 - ATS integrations
 - EU AI Act-style mandatory bias audit tooling
+- OTP request/verify rate-limiting or lockout (flagged during Phase 4.5 —
+  revisit in Phase 7 compliance hardening)
+- Recruiter-facing portal to create interviews / manage org_users from the
+  UI (org_user and org provisioning is ops-only via `/api/admin/*` for now)

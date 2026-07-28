@@ -17,10 +17,15 @@ AI) of the InterviewDesk platform — not a full ATS/interview platform.
   breach reporting, audit logging of AI decisions, human-review path for
   candidates
 - India-only, pilot scale (50–100 interviews over ~3 months)
+- Enterprise org auth (email/OTP) and an internal credit ledger — one credit
+  consumed per interview, manually granted by ops (Phase 4.5 — see
+  `docs/DECISIONS.md`)
 
 **Out of scope (v1)**
 - AI avatar / video generation
-- Multi-tenant billing
+- Self-serve payment/checkout for credits (billing UI, card processing,
+  invoicing) — the credit ledger itself is in scope and built (Phase 4.5),
+  but topping it up is ops-only, not self-serve
 - Proctoring beyond basic tab-switch/fullscreen detection
 - ATS integrations
 - Marketing/landing-page features (sales channel already exists)
@@ -35,7 +40,7 @@ AI) of the InterviewDesk platform — not a full ATS/interview platform.
 - **Voice:** STT/TTS via a single provider — OpenAI Whisper + TTS (decided in
   Phase 4 — see `docs/DECISIONS.md`)
 - **Hosting:** Railway or Render
-- **Auth:** Email/OTP or magic link
+- **Auth:** Email/OTP, JWT session cookie (Phase 4.5 — see `docs/DECISIONS.md`)
 
 See `CLAUDE.md` for full project rules and constraints.
 

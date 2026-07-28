@@ -1,9 +1,14 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '../../components/Layout';
+import RequireAuth from '../../components/RequireAuth';
 import { api, ApiError } from '../../lib/api';
 
 export default function InterviewDetailPage() {
+  return <RequireAuth>{() => <InterviewDetailContent />}</RequireAuth>;
+}
+
+function InterviewDetailContent() {
   const router = useRouter();
   const { id } = router.query;
 

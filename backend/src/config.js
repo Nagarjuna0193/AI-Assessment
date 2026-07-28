@@ -26,4 +26,20 @@ module.exports = {
   sttModel: process.env.STT_MODEL || 'whisper-1',
   ttsModel: process.env.TTS_MODEL || 'tts-1',
   ttsVoice: process.env.TTS_VOICE || 'alloy',
+  // Org-user auth (Phase 4.5) — email/OTP, JWT session cookie. See
+  // docs/DECISIONS.md for the JWT-vs-session-store choice.
+  jwtSecret: process.env.JWT_SECRET || 'dev-only-insecure-secret-change-me',
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
+  otpTtlMinutes: Number(process.env.OTP_TTL_MINUTES) || 10,
+  sessionCookieName: 'org_session',
+  // Email delivery for OTP codes (Resend REST API — see docs/DECISIONS.md).
+  // Falls back to logging the code to the console when unset, so local dev
+  // and tests work without a real provider.
+  authEmailProviderApiKey: process.env.AUTH_EMAIL_PROVIDER_API_KEY,
+  authEmailFrom: process.env.AUTH_EMAIL_FROM || 'no-reply@ai-interview-bot.local',
+  // Shared secret for ops-only endpoints (org/org_user creation, credit
+  // grants) — deliberately NOT the org_user JWT, since these actions must
+  // stay ops-initiated, not self-serve. See docs/DECISIONS.md.
+  opsApiKey: process.env.OPS_API_KEY,
+  frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
 };

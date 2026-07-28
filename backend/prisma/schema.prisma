@@ -22,6 +22,16 @@ enum InterviewStatus {
   CANCELLED
 }
 
+enum OrgRole {
+  ADMIN
+  REVIEWER
+}
+
+enum CreditTransactionType {
+  GRANT
+  DEDUCTION
+}
+
 model Candidate {
   id                 String    @id @default(uuid())
   fullName           String    @map("full_name")
@@ -41,27 +51,97 @@ model Candidate {
 }
 
 model Interview {
-  id                  String          @id @default(uuid())
-  candidateId         String          @map("candidate_id")
-  jobTitle            String?         @map("job_title")
-  jobDescriptionText  String          @map("job_description_text")
-  mode                InterviewMode   @default(TEXT)
-  status              InterviewStatus @default(SCHEDULED)
-  scheduledAt         DateTime?       @map("scheduled_at")
-  startedAt           DateTime?       @map("started_at")
-  completedAt         DateTime?       @map("completed_at")
+  id                 String          @id @default(uuid())
+  candidateId        String          @map("candidate_id")
+  // Org that consumed a credit for this interview. Nullable: interviews
+  // created before Phase 4.5 have no org association — see docs/DECISIONS.md.
+  orgId              String?         @map("org_id")
+  jobTitle           String?         @map("job_title")
+  jobDescriptionText String          @map("job_description_text")
+  mode               InterviewMode   @default(TEXT)
+  status             InterviewStatus @default(SCHEDULED)
+  scheduledAt        DateTime?       @map("scheduled_at")
+  startedAt          DateTime?       @map("started_at")
+  completedAt        DateTime?       @map("completed_at")
   // DPDP: when this interview's data is due for deletion/anonymization.
-  dataRetentionUntil  DateTime?       @map("data_retention_until")
-  createdAt           DateTime        @default(now()) @map("created_at")
-  updatedAt           DateTime        @updatedAt @map("updated_at")
+  dataRetentionUntil DateTime?       @map("data_retention_until")
+  createdAt          DateTime        @default(now()) @map("created_at")
+  updatedAt          DateTime        @updatedAt @map("updated_at")
 
-  candidate      Candidate       @relation(fields: [candidateId], references: [id])
-  questions      Question[]
-  responses      Response[]
-  evaluations    Evaluation[]
-  consentRecords ConsentRecord[]
+  candidate         Candidate          @relation(fields: [candidateId], references: [id])
+  organization      Organization?      @relation(fields: [orgId], references: [id])
+  questions         Question[]
+  responses         Response[]
+  evaluations       Evaluation[]
+  consentRecords    ConsentRecord[]
+  creditTransaction CreditTransaction?
 
+  @@index([orgId])
   @@map("interviews")
+}
+
+model Organization {
+  id            String   @id @default(uuid())
+  name          String
+  creditBalance Int      @default(0) @map("credit_balance")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  orgUsers           OrgUser[]
+  interviews         Interview[]
+  creditTransactions CreditTransaction[]
+
+  @@map("organizations")
+}
+
+model OrgUser {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  orgId     String   @map("org_id")
+  role      OrgRole  @default(REVIEWER)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [orgId], references: [id])
+  loginOtps    LoginOtp[]
+
+  @@index([orgId])
+  @@map("org_users")
+}
+
+// DPDP-adjacent audit note: this is login infrastructure, not candidate
+// personal data — kept separate from audit_log (which tracks AI decisions).
+model LoginOtp {
+  id         String    @id @default(uuid())
+  orgUserId  String    @map("org_user_id")
+  codeHash   String    @map("code_hash")
+  expiresAt  DateTime  @map("expires_at")
+  consumedAt DateTime? @map("consumed_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  orgUser OrgUser @relation(fields: [orgUserId], references: [id])
+
+  @@index([orgUserId])
+  @@map("login_otps")
+}
+
+// The credits audit trail (not just a balance counter) — every grant and
+// every per-interview deduction is a row here.
+model CreditTransaction {
+  id          String                @id @default(uuid())
+  orgId       String                @map("org_id")
+  amount      Int
+  type        CreditTransactionType
+  interviewId String?               @unique @map("interview_id")
+  // Ops email/identifier for a grant, or "system" for an automatic deduction.
+  addedBy     String                @map("added_by")
+  createdAt   DateTime              @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [orgId], references: [id])
+  interview    Interview?   @relation(fields: [interviewId], references: [id])
+
+  @@index([orgId])
+  @@map("credit_transactions")
 }
 
 model Question {

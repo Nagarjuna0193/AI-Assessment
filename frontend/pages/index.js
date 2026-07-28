@@ -23,9 +23,18 @@ export default function ConsentAndStartPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
+  // The recruiter's org is identified by an `org` query param on the link
+  // shared with the candidate (e.g. https://.../?org=<orgId>) — candidates
+  // aren't expected to know or enter an organization ID themselves. See
+  // docs/DECISIONS.md.
+  const orgId = typeof router.query.org === 'string' ? router.query.org : '';
+  const orgLinkMissing = router.isReady && !orgId;
+
   const update = (field) => (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
 
   const canSubmit =
+    !orgLinkMissing &&
+    orgId &&
     consentAccepted &&
     (mode !== 'VOICE' || voiceConsentAccepted) &&
     form.fullName.trim() &&
@@ -65,6 +74,7 @@ export default function ConsentAndStartPage() {
         jobDescriptionText: form.jobDescriptionText.trim(),
         resumeText: form.resumeText.trim(),
         mode,
+        orgId,
       });
 
       router.push(`/interview/${interviewId}`);
@@ -73,6 +83,18 @@ export default function ConsentAndStartPage() {
       setSubmitting(false);
     }
   };
+
+  if (orgLinkMissing) {
+    return (
+      <Layout>
+        <h1 className="text-2xl font-semibold mb-1">Start your interview</h1>
+        <p className="text-red-600">
+          This interview link is missing an organization reference. Please use the link provided
+          by your recruiter.
+        </p>
+      </Layout>
+    );
+  }
 
   return (
     <Layout>

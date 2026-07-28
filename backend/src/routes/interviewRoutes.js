@@ -6,6 +6,8 @@ const { logAuditEvent } = require('../services/auditLogService');
 const { hasValidConsent } = require('../services/consentService');
 const anthropicService = require('../services/anthropicService');
 const voiceService = require('../services/voiceService');
+const creditService = require('../services/creditService');
+const { requireOrgAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -13,10 +15,12 @@ const router = express.Router();
 // is fine at pilot scale and avoids writing raw audio to disk.
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
-// List interviews for the reviewer dashboard, most recent first.
-router.get('/', async (req, res, next) => {
+// List interviews for the reviewer dashboard, most recent first. Scoped to
+// the logged-in org_user's own organization — see docs/DECISIONS.md.
+router.get('/', requireOrgAuth, async (req, res, next) => {
   try {
     const interviews = await prisma.interview.findMany({
+      where: { orgId: req.orgUser.orgId },
       orderBy: { createdAt: 'desc' },
       include: {
         candidate: { select: { id: true, fullName: true, email: true } },
@@ -42,8 +46,50 @@ router.get('/', async (req, res, next) => {
   }
 });
 
+// Candidate-facing progress recovery (unauthenticated by design — the
+// candidate flow has no login). Deliberately minimal: no jobDescriptionText,
+// no candidate PII, no evaluation — just enough for the interview screen to
+// resume after a page refresh. See docs/DECISIONS.md.
+router.get('/:id/progress', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const interview = await prisma.interview.findUnique({
+      where: { id },
+      include: {
+        questions: {
+          orderBy: { orderIndex: 'asc' },
+          include: { responses: true },
+        },
+      },
+    });
+
+    if (!interview) {
+      return res.status(404).json({ error: 'interview_not_found' });
+    }
+
+    res.json({
+      interview: {
+        id: interview.id,
+        jobTitle: interview.jobTitle,
+        mode: interview.mode,
+        status: interview.status,
+      },
+      transcript: interview.questions.map((q) => ({
+        questionId: q.id,
+        orderIndex: q.orderIndex,
+        questionText: q.questionText,
+        responseText: q.responses[0] ? q.responses[0].responseText : null,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Fetch a single interview's full transcript + evaluation for reviewers.
-router.get('/:id', async (req, res, next) => {
+// Scoped to the logged-in org_user's own organization — see docs/DECISIONS.md.
+router.get('/:id', requireOrgAuth, async (req, res, next) => {
   try {
     const { id } = req.params;
 
@@ -59,7 +105,7 @@ router.get('/:id', async (req, res, next) => {
       },
     });
 
-    if (!interview) {
+    if (!interview || interview.orgId !== req.orgUser.orgId) {
       return res.status(404).json({ error: 'interview_not_found' });
     }
 
@@ -103,12 +149,12 @@ function mapAnthropicError(err, res, declinedError, failedError) {
 // calls Claude to generate the question set and persists it.
 router.post('/', async (req, res, next) => {
   try {
-    const { candidateEmail, jobTitle, jobDescriptionText, resumeText, mode } = req.body;
+    const { candidateEmail, jobTitle, jobDescriptionText, resumeText, mode, orgId } = req.body;
 
-    if (!candidateEmail || !jobDescriptionText || !resumeText) {
+    if (!candidateEmail || !jobDescriptionText || !resumeText || !orgId) {
       return res.status(400).json({
         error: 'invalid_request',
-        message: 'candidateEmail, jobDescriptionText, and resumeText are required',
+        message: 'candidateEmail, jobDescriptionText, resumeText, and orgId are required',
       });
     }
 
@@ -118,6 +164,11 @@ router.post('/', async (req, res, next) => {
         error: 'candidate_not_found',
         message: 'Record consent for this candidate before starting an interview',
       });
+    }
+
+    const organization = await prisma.organization.findUnique({ where: { id: orgId } });
+    if (!organization) {
+      return res.status(404).json({ error: 'organization_not_found' });
     }
 
     const normalizedMode = mode === 'VOICE' ? 'VOICE' : 'TEXT';
@@ -132,6 +183,15 @@ router.post('/', async (req, res, next) => {
       });
     }
 
+    // Fail fast before the LLM call — the authoritative, race-safe check
+    // happens atomically alongside the deduction below.
+    if (organization.creditBalance <= 0) {
+      return res.status(402).json({
+        error: 'insufficient_credits',
+        message: 'Organization has no credits remaining',
+      });
+    }
+
     let generated;
     try {
       generated = await anthropicService.generateQuestions(jobDescriptionText, resumeText);
@@ -142,24 +202,42 @@ router.post('/', async (req, res, next) => {
       throw err;
     }
 
-    const interview = await prisma.interview.create({
-      data: {
-        candidateId: candidate.id,
-        jobTitle: jobTitle || null,
-        jobDescriptionText,
-        mode: normalizedMode,
-        status: 'IN_PROGRESS',
-        startedAt: new Date(),
-        questions: {
-          create: generated.questions.map((q, index) => ({
-            orderIndex: index,
-            questionText: q.questionText,
-            generatedByModel: generated.model,
-          })),
-        },
-      },
-      include: { questions: { orderBy: { orderIndex: 'asc' } } },
-    });
+    let interview;
+    try {
+      interview = await prisma.$transaction(async (tx) => {
+        const created = await tx.interview.create({
+          data: {
+            candidateId: candidate.id,
+            orgId: organization.id,
+            jobTitle: jobTitle || null,
+            jobDescriptionText,
+            mode: normalizedMode,
+            status: 'IN_PROGRESS',
+            startedAt: new Date(),
+            questions: {
+              create: generated.questions.map((q, index) => ({
+                orderIndex: index,
+                questionText: q.questionText,
+                generatedByModel: generated.model,
+              })),
+            },
+          },
+          include: { questions: { orderBy: { orderIndex: 'asc' } } },
+        });
+
+        await creditService.deductCreditForInterview(tx, organization.id, created.id);
+
+        return created;
+      });
+    } catch (err) {
+      if (err instanceof creditService.InsufficientCreditsError) {
+        return res.status(402).json({
+          error: 'insufficient_credits',
+          message: 'Organization has no credits remaining',
+        });
+      }
+      throw err;
+    }
 
     await logAuditEvent({
       actorType: 'system',

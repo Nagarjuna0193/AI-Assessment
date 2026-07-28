@@ -21,7 +21,7 @@ export default function InterviewPage() {
     setLoading(true);
     setError(null);
     try {
-      const data = await api.getInterview(interviewId);
+      const data = await api.getInterviewProgress(interviewId);
 
       if (data.interview.status === 'COMPLETED') {
         router.replace(`/interview/${interviewId}/complete`);
