@@ -97,8 +97,7 @@ Not written to `audit_log` — text extraction from an uploaded file isn't an AI
 Invite **one** candidate to a template — creates the `candidate_sessions`
 row and atomically deducts 1 credit (moved here from template/interview
 creation in Phase 4.5 — a template with zero candidates now costs nothing).
-Bulk invite (many candidates at once) is Phase 4.7, not built here; see
-`docs/DECISIONS.md` for why this minimal single-invite endpoint exists now.
+For many candidates at once, see the bulk endpoint below.
 
 **Request body**: `{ "candidateName": "Jane Doe", "email": "jane@example.com" }`
 
@@ -117,6 +116,35 @@ Bulk invite (many candidates at once) is Phase 4.7, not built here; see
 - `402 insufficient_credits` — the organization has no credits remaining.
 
 Writes a `credit_transactions` entry (`type: DEDUCTION`) referencing the new session.
+
+### `POST /api/templates/:templateId/sessions/bulk` (Phase 4.7)
+
+Invite up to 100 candidates against one template in a single call.
+**All-or-nothing**: every row is validated first, then all sessions are
+created (and 1 credit deducted per session) in one DB transaction — if any
+row is invalid or credits run out mid-batch, nobody is invited and no
+credits are spent. The dashboard parses pasted lines / a `.csv` file into
+this JSON shape client-side.
+
+**Request body**
+```json
+{ "candidates": [ { "candidateName": "Jane Doe", "email": "jane@example.com" }, ... ] }
+```
+Emails are trimmed and lower-cased; names are trimmed.
+
+**Response `201`**: `{ "invites": [ { "session": {...}, "inviteLink": "..." }, ... ] }`
+(same per-invite shape as the single-invite endpoint, in request order).
+
+**Errors**
+- `401 auth_required` / `403 forbidden` (non-ADMIN role)
+- `400 invalid_request` — `candidates` missing or empty.
+- `400 too_many_candidates` — more than 100 rows.
+- `400 invalid_rows` — one or more rows failed validation; body includes
+  `rowErrors: [{ "row": 2, "message": "a valid email is required" }, ...]`
+  (1-indexed). Covers missing name, invalid email, duplicate email within the batch.
+- `404 template_not_found`
+- `402 insufficient_credits` — fewer credits than rows (checked up front), or
+  credits ran out during the transaction (rolled back).
 
 ---
 

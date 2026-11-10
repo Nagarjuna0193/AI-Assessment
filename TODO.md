@@ -1,6 +1,6 @@
 # TODO / Phase Checklist
 
-Current phase: **Phase 4.6 — interview template/candidate session split done**
+Current phase: **Phase 4.7 — bulk invite done**
 
 See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 
@@ -162,7 +162,19 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
       `backend/tests/sessions.test.js` (replaces `voice.test.js`), rewrote
       `backend/tests/interviews.test.js` for the template/session shape —
       59/59 passing
-- [ ] Bulk invite (many candidates at once against one template) — Phase 4.7
+- [x] Bulk invite (many candidates at once against one template) — done in Phase 4.7 below
+
+## Phase 4.7 — Bulk invite
+- [x] `POST /api/templates/:templateId/sessions/bulk` — up to 100 candidates
+      per batch, all-or-nothing (one DB transaction, 1 credit per session,
+      shared `createInvitedSession` helper with the single-invite endpoint)
+      (`backend/src/routes/templateRoutes.js`)
+- [x] Dashboard: Single/Bulk toggle on the invite panel; bulk accepts pasted
+      `name, email` lines or a `.csv` file, shows per-row errors and all
+      invite links (`frontend/pages/dashboard/index.js`)
+- [x] Tests: 6 new cases in `backend/tests/templates.test.js` — 65/65 passing
+- [ ] Automatic invite emails to candidates — not built; admins still copy
+      links out (see `docs/DECISIONS.md`)
 
 ## Phase 5 — Evaluation
 - [ ] Claude-based transcript evaluation against JD
@@ -196,6 +208,5 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 - Org/org_user provisioning UI (still ops-only via `/api/admin/*`) —
   narrower than before: template creation and candidate invites now do have
   an admin UI as of Phase 4.6
-- **Phase 4.7 — Bulk invite**: inviting many candidates against one
-  template at once (CSV upload or similar), building on the single-candidate
-  invite endpoint from Phase 4.6
+- Automatic invite emails to candidates (Resend is already wired for OTP
+  codes; would reuse `emailService`)

@@ -197,3 +197,105 @@ describe('POST /api/templates/:templateId/sessions (invite a candidate)', () => 
     );
   });
 });
+
+describe('POST /api/templates/:templateId/sessions/bulk (bulk invite)', () => {
+  const url = '/api/templates/tmpl_1/sessions/bulk';
+
+  it('returns 403 for a REVIEWER-role org_user', async () => {
+    const res = await request(app)
+      .post(url)
+      .set('Cookie', cookieFor('REVIEWER'))
+      .send({ candidates: [{ candidateName: 'A', email: 'a@example.com' }] });
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 400 with per-row errors and invites nobody when any row is invalid', async () => {
+    const res = await request(app)
+      .post(url)
+      .set('Cookie', cookieFor('ADMIN'))
+      .send({
+        candidates: [
+          { candidateName: 'A', email: 'a@example.com' },
+          { candidateName: '', email: 'not-an-email' },
+          { candidateName: 'C', email: 'A@example.com' },
+        ],
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_rows');
+    expect(res.body.rowErrors.map((e) => e.row)).toEqual([2, 2, 3]);
+    expect(prisma.candidateSession.create).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when the batch exceeds the size cap', async () => {
+    const candidates = Array.from({ length: 101 }, (_, i) => ({ candidateName: `C${i}`, email: `c${i}@example.com` }));
+    const res = await request(app).post(url).set('Cookie', cookieFor('ADMIN')).send({ candidates });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('too_many_candidates');
+  });
+
+  it('returns 402 up front when the org has fewer credits than rows', async () => {
+    prisma.interviewTemplate.findUnique.mockResolvedValue({ id: 'tmpl_1', orgId: 'org_1' });
+    prisma.organization.findUnique.mockResolvedValue({ id: 'org_1', creditBalance: 1 });
+
+    const res = await request(app)
+      .post(url)
+      .set('Cookie', cookieFor('ADMIN'))
+      .send({
+        candidates: [
+          { candidateName: 'A', email: 'a@example.com' },
+          { candidateName: 'B', email: 'b@example.com' },
+        ],
+      });
+
+    expect(res.status).toBe(402);
+    expect(prisma.candidateSession.create).not.toHaveBeenCalled();
+  });
+
+  it('returns 402 when credits run out mid-transaction (whole batch rolls back)', async () => {
+    prisma.interviewTemplate.findUnique.mockResolvedValue({ id: 'tmpl_1', orgId: 'org_1' });
+    prisma.organization.findUnique.mockResolvedValue({ id: 'org_1', creditBalance: 2 });
+    prisma.candidateSession.create.mockImplementation(({ data }) => Promise.resolve({ id: `s_${data.email}`, ...data }));
+    prisma.organization.updateMany.mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 });
+    prisma.creditTransaction.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post(url)
+      .set('Cookie', cookieFor('ADMIN'))
+      .send({
+        candidates: [
+          { candidateName: 'A', email: 'a@example.com' },
+          { candidateName: 'B', email: 'b@example.com' },
+        ],
+      });
+
+    expect(res.status).toBe(402);
+  });
+
+  it('invites every candidate, deducting one credit each, and returns all invite links', async () => {
+    prisma.interviewTemplate.findUnique.mockResolvedValue({ id: 'tmpl_1', orgId: 'org_1' });
+    prisma.organization.findUnique.mockResolvedValue({ id: 'org_1', creditBalance: 5 });
+    prisma.candidateSession.create.mockImplementation(({ data }) =>
+      Promise.resolve({ id: `s_${data.email}`, status: 'INVITED', ...data })
+    );
+    prisma.organization.updateMany.mockResolvedValue({ count: 1 });
+    prisma.creditTransaction.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post(url)
+      .set('Cookie', cookieFor('ADMIN'))
+      .send({
+        candidates: [
+          { candidateName: ' A ', email: 'A@Example.com' },
+          { candidateName: 'B', email: 'b@example.com' },
+        ],
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.invites).toHaveLength(2);
+    expect(res.body.invites[0].session.email).toBe('a@example.com');
+    expect(res.body.invites[0].session.candidateName).toBe('A');
+    expect(res.body.invites[0].inviteLink).toContain('/invite/');
+    expect(prisma.creditTransaction.create).toHaveBeenCalledTimes(2);
+  });
+});

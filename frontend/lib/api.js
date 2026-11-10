@@ -63,6 +63,8 @@ export const api = {
   createTemplate: (formData) => requestFormData('/api/templates', formData),
   inviteCandidate: (templateId, payload) =>
     request(`/api/templates/${templateId}/sessions`, { method: 'POST', body: payload }),
+  bulkInviteCandidates: (templateId, candidates) =>
+    request(`/api/templates/${templateId}/sessions/bulk`, { method: 'POST', body: { candidates } }),
 
   // Candidate flow (unauthenticated, addressed by invite token)
   getSession: (token) => request(`/api/sessions/${token}`),

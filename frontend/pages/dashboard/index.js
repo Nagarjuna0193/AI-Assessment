@@ -112,7 +112,7 @@ function TemplateCard({ template, expanded, onToggle, canInvite, onInvited }) {
 
       {expanded && (
         <div className="border-t border-slate-100 px-5 py-4 space-y-4">
-          {canInvite && <InviteForm templateId={template.id} onInvited={onInvited} />}
+          {canInvite && <InvitePanel templateId={template.id} onInvited={onInvited} />}
 
           {template.sessions.length === 0 ? (
             <p className="text-sm text-slate-500">No candidates invited yet.</p>
@@ -153,6 +153,142 @@ function TemplateCard({ template, expanded, onToggle, canInvite, onInvited }) {
   );
 }
 
+function InvitePanel({ templateId, onInvited }) {
+  const [bulk, setBulk] = useState(false);
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded-md p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-medium text-slate-700">Invite {bulk ? 'candidates in bulk' : 'a candidate'}</p>
+        <div className="flex text-xs border border-slate-300 rounded-md overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setBulk(false)}
+            className={`px-2 py-1 ${!bulk ? 'bg-slate-900 text-white' : 'bg-white text-slate-600'}`}
+          >
+            Single
+          </button>
+          <button
+            type="button"
+            onClick={() => setBulk(true)}
+            className={`px-2 py-1 ${bulk ? 'bg-slate-900 text-white' : 'bg-white text-slate-600'}`}
+          >
+            Bulk
+          </button>
+        </div>
+      </div>
+      {bulk ? (
+        <BulkInviteForm templateId={templateId} onInvited={onInvited} />
+      ) : (
+        <InviteForm templateId={templateId} onInvited={onInvited} />
+      )}
+    </div>
+  );
+}
+
+// Parses "name, email" lines (pasted or from a .csv file). A first line with
+// no "@" in it is treated as a header row and skipped.
+function parseCandidateRows(text) {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (lines.length > 0 && !lines[0].includes('@')) lines.shift();
+  return lines.map((line) => {
+    const parts = line.split(',').map((p) => p.trim().replace(/^"|"$/g, ''));
+    const emailIndex = parts.findIndex((p) => p.includes('@'));
+    const email = emailIndex >= 0 ? parts[emailIndex] : '';
+    const candidateName = parts.filter((_, i) => i !== emailIndex).join(' ').trim();
+    return { candidateName, email };
+  });
+}
+
+function BulkInviteForm({ templateId, onInvited }) {
+  const [text, setText] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+  const [rowErrors, setRowErrors] = useState([]);
+  const [invites, setInvites] = useState(null);
+
+  const rows = parseCandidateRows(text);
+
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setText(String(reader.result || ''));
+    reader.readAsText(file);
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    setRowErrors([]);
+    setInvites(null);
+    try {
+      const result = await api.bulkInviteCandidates(templateId, rows);
+      setInvites(result.invites);
+      setText('');
+      onInvited();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not invite these candidates.');
+      if (err instanceof ApiError && err.body && Array.isArray(err.body.rowErrors)) {
+        setRowErrors(err.body.rowErrors);
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-2">
+      <p className="text-xs text-slate-500">
+        One candidate per line as <span className="font-mono">name, email</span>, or upload a .csv with
+        those two columns. Each invite uses 1 credit. If any row is invalid, nobody is invited.
+      </p>
+      <textarea
+        rows={5}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={'Jane Doe, jane@example.com\nRavi Kumar, ravi@example.com'}
+        className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm font-mono"
+      />
+      <div className="flex flex-wrap items-center gap-2">
+        <input type="file" accept=".csv,text/csv,text/plain" onChange={handleFile} className="text-xs" />
+        <button
+          type="submit"
+          disabled={submitting || rows.length === 0}
+          className="ml-auto bg-slate-900 text-white rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-40"
+        >
+          {submitting ? 'Inviting…' : `Invite ${rows.length} candidate${rows.length === 1 ? '' : 's'}`}
+        </button>
+      </div>
+      {error && <p className="text-xs text-red-600">{error}</p>}
+      {rowErrors.length > 0 && (
+        <ul className="text-xs text-red-600 list-disc pl-5">
+          {rowErrors.map((r, i) => (
+            <li key={i}>
+              Row {r.row}: {r.message}
+            </li>
+          ))}
+        </ul>
+      )}
+      {invites && (
+        <div className="text-xs text-emerald-700 space-y-1">
+          <p className="font-medium">{invites.length} invited. Send each candidate their link:</p>
+          <ul className="space-y-0.5 break-all">
+            {invites.map((inv) => (
+              <li key={inv.session.id}>
+                {inv.session.candidateName} ({inv.session.email}): <span className="font-mono">{inv.inviteLink}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </form>
+  );
+}
+
 function InviteForm({ templateId, onInvited }) {
   const [candidateName, setCandidateName] = useState('');
   const [email, setEmail] = useState('');
@@ -182,8 +318,7 @@ function InviteForm({ templateId, onInvited }) {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="bg-slate-50 border border-slate-200 rounded-md p-3 space-y-2">
-      <p className="text-sm font-medium text-slate-700">Invite a candidate</p>
+    <form onSubmit={handleSubmit} className="space-y-2">
       <div className="flex flex-wrap gap-2">
         <input
           type="text"
