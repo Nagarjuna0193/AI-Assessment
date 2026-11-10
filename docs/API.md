@@ -362,9 +362,11 @@ its existence isn't leaked across orgs.
 
 Triggers evaluation of a completed session's full transcript: calls Claude
 with the template's JD + all question/answer pairs, and stores the
-structured score + feedback. Unchanged in behavior from Phase 2, just
-re-keyed to a candidate_session id. **Requires an org_user session** (any
-role — evaluation isn't ADMIN-restricted).
+structured feedback report. **Phase 5**: the report has an advisory
+recommendation, strengths, concerns, and an evidence-backed 1-5 scorecard
+(prompt `evaluation.v2` — decision logic in `docs/ARCHITECTURE.md`). Each
+call adds a new row; `GET /api/interviews/:id` returns the latest.
+**Requires an org_user session** (any role — evaluation isn't ADMIN-restricted).
 
 **Request body:** none required.
 
@@ -375,11 +377,15 @@ role — evaluation isn't ADMIN-restricted).
     "id": "...",
     "sessionId": "...",
     "overallScore": 78,
+    "recommendation": "further_review",   // advance | further_review | do_not_advance (advisory)
     "summaryText": "...",
+    "strengths": [ { "point": "...", "evidence": "..." } ],
+    "concerns":  [ { "point": "...", "evidence": "..." } ],
     "scorecard": [
-      { "criterion": "Technical depth", "score": 8, "notes": "..." }
+      { "criterion": "Node.js backend depth", "score": 4, "evidence": "...", "notes": "...", "questionNumbers": [1, 3] }
     ],
-    "modelVersion": "claude-opus-5",
+    "modelVersion": "claude-opus-5-5",
+    "promptVersion": "evaluation.v2",
     ...
   }
 }
@@ -391,7 +397,9 @@ role — evaluation isn't ADMIN-restricted).
 - `409 session_not_complete` — not all questions have been answered yet.
 - `502 evaluation_declined` / `502 evaluation_failed`
 
-Writes an `audit_log` entry (`action: evaluation_generated`).
+Writes an `audit_log` entry (`action: evaluation_generated`, `actor_type:
+recruiter` with the triggering org_user's id, plus `prompt_ref`, `input_ref`,
+`output_ref`).
 
 ---
 
@@ -500,7 +508,8 @@ ledger in this phase (no payment gateway/checkout; parked for later, see
   output (`output_config.format` with a Zod schema via `messages.parse()`)
   rather than free-text parsing, so a malformed response is caught and
   surfaced as `502`, not silently stored.
-- Default model: `claude-opus-5` (overridable via `ANTHROPIC_MODEL`) — see
+- Default model: `claude-opus-5-5` (overridable via `ANTHROPIC_MODEL`), with
+  server-side refusal fallback (`fallbacks: "default"`) enabled — see
   `docs/DECISIONS.md` for the cost/quality tradeoff note.
 - Resume/JD file text extraction (`pdf-parse` for PDF, `mammoth` for DOCX)
   is shared between the candidate resume upload and the admin JD file

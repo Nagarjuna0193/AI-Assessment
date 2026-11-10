@@ -234,10 +234,19 @@ model Evaluation {
   id                   String    @id @default(uuid())
   sessionId            String    @map("session_id")
   overallScore         Decimal?  @map("overall_score") @db.Decimal(5, 2)
-  // Structured per-criterion scores/notes.
+  // Structured per-criterion scores/notes. Phase 5 (evaluation.v2) shape:
+  // [{ criterion, score 1-5, evidence, notes, questionNumbers[] }].
   scorecard            Json?     @map("scorecard")
   summaryText          String?   @map("summary_text")
+  // Phase 5: advisory AI suggestion only — "advance" | "further_review" |
+  // "do_not_advance". The hiring decision stays with a human reviewer.
+  recommendation       String?
+  // Phase 5: [{ point, evidence }] arrays.
+  strengths            Json?
+  concerns             Json?
   modelVersion         String?   @map("model_version")
+  // Phase 5: e.g. "evaluation.v2" — see anthropicService.PROMPT_VERSIONS.
+  promptVersion        String?   @map("prompt_version")
   humanReviewRequested Boolean   @default(false) @map("human_review_requested")
   humanReviewNotes     String?   @map("human_review_notes")
   evaluatedAt          DateTime? @map("evaluated_at")

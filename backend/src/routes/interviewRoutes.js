@@ -152,7 +152,9 @@ router.post('/:id/evaluate', requireOrgAuth, async (req, res, next) => {
 
     let result;
     try {
-      result = await anthropicService.evaluateTranscript(session.template.jobDescriptionText, transcript);
+      result = await anthropicService.evaluateTranscript(session.template.jobDescriptionText, transcript, {
+        mode: session.mode,
+      });
     } catch (err) {
       if (mapAnthropicError(err, res, 'evaluation_declined', 'evaluation_failed')) {
         return;
@@ -160,24 +162,34 @@ router.post('/:id/evaluate', requireOrgAuth, async (req, res, next) => {
       throw err;
     }
 
+    // Each run adds a new row (re-evaluation keeps history); the detail
+    // view shows the latest.
     const evaluation = await prisma.evaluation.create({
       data: {
         sessionId: id,
         overallScore: result.overallScore,
+        recommendation: result.recommendation,
         summaryText: result.summaryText,
+        strengths: result.strengths,
+        concerns: result.concerns,
         scorecard: result.scorecard,
         modelVersion: result.model,
+        promptVersion: result.promptVersion,
         evaluatedAt: new Date(),
       },
     });
 
     await logAuditEvent({
-      actorType: 'system',
+      actorType: 'recruiter',
+      actorId: req.orgUser.orgUserId,
       action: 'evaluation_generated',
       entityType: 'evaluation',
       entityId: evaluation.id,
       modelVersion: result.model,
-      purpose: 'LLM-based transcript evaluation against job description',
+      promptRef: result.promptVersion,
+      inputRef: `candidate_session:${id}`,
+      outputRef: `evaluation:${evaluation.id}`,
+      purpose: 'LLM-based transcript evaluation against job description (triggered by reviewer)',
     });
 
     res.status(201).json({ evaluation });

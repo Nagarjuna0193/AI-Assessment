@@ -203,9 +203,13 @@ describe('POST /api/interviews/:id/evaluate', () => {
     ]);
     anthropicService.evaluateTranscript.mockResolvedValue({
       overallScore: 80,
+      recommendation: 'advance',
       summaryText: 'Good fit',
-      scorecard: [{ criterion: 'Communication', score: 8, notes: 'Clear' }],
-      model: 'claude-opus-5',
+      strengths: [{ point: 'Clear', evidence: 'Q1' }],
+      concerns: [],
+      scorecard: [{ criterion: 'Communication', score: 4, evidence: 'Q1', notes: 'Clear', questionNumbers: [1] }],
+      model: 'claude-opus-5-5',
+      promptVersion: 'evaluation.v2',
     });
     prisma.evaluation.create.mockResolvedValue({ id: 'eval_1', overallScore: 80 });
 
@@ -217,11 +221,25 @@ describe('POST /api/interviews/:id/evaluate', () => {
     expect(res.status).toBe(201);
     expect(res.body.evaluation.overallScore).toBe(80);
     expect(prisma.evaluation.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ sessionId: 'sess_1' }) })
+      expect.objectContaining({
+        data: expect.objectContaining({
+          sessionId: 'sess_1',
+          recommendation: 'advance',
+          strengths: [{ point: 'Clear', evidence: 'Q1' }],
+          concerns: [],
+          promptVersion: 'evaluation.v2',
+        }),
+      })
     );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ action: 'evaluation_generated', entityType: 'evaluation' }),
+        data: expect.objectContaining({
+          action: 'evaluation_generated',
+          entityType: 'evaluation',
+          promptRef: 'evaluation.v2',
+          inputRef: 'candidate_session:sess_1',
+          outputRef: 'evaluation:eval_1',
+        }),
       })
     );
   });

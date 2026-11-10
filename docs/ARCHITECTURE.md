@@ -177,7 +177,45 @@ org-initiated actions, just restricted to a role within the org. See
 5. Candidate responses are captured as a transcript in Postgres, keyed to
    the candidate_session.
 6. A reviewer (org_user) triggers evaluation; backend calls Claude to
-   evaluate the transcript against the JD.
+   evaluate the transcript against the JD and produce the structured
+   feedback report (see "AI decision logic" below).
 7. The session detail page shows the resume score/rationale and the
    interview evaluation together — one report, not two screens.
 8. Every LLM call in steps 4 and 6 is written to the audit log.
+
+## AI decision logic (Phase 5, for audit readiness)
+
+All Claude calls live in `backend/src/services/anthropicService.js` and go
+through one helper (`callStructured`): structured output validated against
+a Zod schema, `effort: medium`, server-side refusal fallback enabled. Every
+call's prompt version (`PROMPT_VERSIONS`) and the model that actually
+answered are written to `audit_log` (`prompt_ref`, `model_version`), along
+with `input_ref` / `output_ref` pointers to the data used and produced.
+
+| Decision | When | Inputs | Output | Prompt version |
+|----------|------|--------|--------|----------------|
+| Personalized questions + resume fit (AI mode) | Candidate uploads resume | JD text, resume text | 5-8 questions; resume-JD score 0-100 + rationale | `session_questions_and_score.v1` |
+| Resume fit only (MANUAL mode) | Candidate uploads resume | JD text, resume text | resume-JD score 0-100 + rationale | `resume_score_only.v1` |
+| Interview evaluation / feedback report | Reviewer clicks "Run evaluation" on a completed session | JD text, Q&A transcript, answer mode (text/voice) | see below | `evaluation.v2` |
+
+**Evaluation report (`evaluation.v2`)**
+- 4-6 criteria derived from the JD, each scored 1-5 with anchors
+  (1 = no evidence / below bar, 3 = meets bar, 5 = exceptional with specific
+  evidence), with an evidence quote and the question numbers it came from.
+- `overallScore` 0-100, consistent with the criteria weighted by role relevance.
+- `recommendation`: `advance` / `further_review` / `do_not_advance` —
+  **advisory only**; the model is told to prefer `further_review` when the
+  evidence is thin. A human reviewer makes the hiring decision.
+- `strengths` / `concerns`: each a point plus supporting evidence.
+- Fairness instructions: ignore name, gender, age, nationality, religion,
+  caste, region, accent and other personal characteristics; don't penalize
+  grammar or non-native phrasing unless the JD requires written
+  communication; read past voice-transcription errors; unanswered questions
+  are missing evidence, not negative evidence.
+- Prompt-injection guard: the transcript is treated as data; instructions
+  inside it are not followed.
+- Not used as inputs: the resume or resume-fit score (scored separately,
+  shown alongside) and any proctoring signals.
+
+Re-running evaluation adds a new `evaluations` row (history kept); the
+reviewer UI shows the latest.

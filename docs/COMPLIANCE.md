@@ -39,8 +39,10 @@ requested — decision logic and data flow are documented from day one.
 
 ## Audit logging of AI decisions
 
-- [ ] Every LLM call (question generation, evaluation) is logged with actor,
-      timestamp, input reference, model/prompt version, and output
+- [x] Every LLM call (question generation, resume scoring, evaluation) is
+      logged with actor, timestamp, input reference, model + prompt version,
+      and output reference (Phase 5 — `PROMPT_VERSIONS` in
+      `backend/src/services/anthropicService.js`)
 - [x] STT transcription of a candidate's spoken answer is logged
       (`action: voice_answer_transcribed`) since it processes candidate
       personal data via a third-party provider (Phase 4). TTS of question
@@ -58,7 +60,9 @@ requested — decision logic and data flow are documented from day one.
 
 ## Documentation readiness (in case of future audit request)
 
-- [ ] Decision logic for question generation documented
-- [ ] Decision logic for evaluation/scoring documented
+- [x] Decision logic for question generation documented
+      (`docs/ARCHITECTURE.md` → "AI decision logic")
+- [x] Decision logic for evaluation/scoring documented (same section;
+      includes fairness instructions and what is *not* used as input)
 - [ ] Data flow diagram kept up to date (`docs/ARCHITECTURE.md`)
 - [ ] Assumptions log kept up to date (`docs/DECISIONS.md`)

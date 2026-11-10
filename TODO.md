@@ -1,6 +1,6 @@
 # TODO / Phase Checklist
 
-Current phase: **Phase 4.7 — bulk invite done**
+Current phase: **Phase 5 — evaluation & structured feedback report done**
 
 See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 
@@ -177,8 +177,25 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
       links out (see `docs/DECISIONS.md`)
 
 ## Phase 5 — Evaluation
-- [ ] Claude-based transcript evaluation against JD
-- [ ] Structured feedback report generation
+- [x] Claude-based transcript evaluation against JD (existed since Phase 2;
+      now also passes answer mode so voice-transcription errors are discounted)
+- [x] Structured feedback report generation — `evaluation.v2`: advisory
+      recommendation, strengths/concerns with evidence, 4-6 JD-derived
+      criteria scored 1-5 with evidence + question refs, overall 0-100
+      (`backend/src/services/anthropicService.js`); migration
+      `20261111000000_evaluation_report_v2` adds `recommendation`,
+      `strengths`, `concerns`, `prompt_version` to `evaluations`
+- [x] Fairness + prompt-injection instructions in the evaluation prompt
+- [x] Every LLM call audit-logged with prompt version, input ref, output ref;
+      evaluation logged with the triggering reviewer as actor
+- [x] Default model `claude-opus-5` → `claude-opus-5-5`, server-side refusal
+      fallback enabled
+- [x] Decision logic documented in `docs/ARCHITECTURE.md` ("AI decision logic")
+- [x] Tests: new `backend/tests/anthropicService.test.js` (SDK mocked) —
+      72/72 passing
+- [ ] Apply the migration to the real DB (`npx prisma migrate deploy`) and
+      run one live evaluation to sanity-check report quality — needs the
+      real `DATABASE_URL` / `ANTHROPIC_API_KEY`
 
 ## Phase 6 — Reporting & human review
 - [ ] Feedback report UI (recruiter-facing)

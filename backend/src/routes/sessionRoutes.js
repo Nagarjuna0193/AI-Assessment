@@ -205,13 +205,20 @@ router.post('/:token/resume', upload.single('resume'), async (req, res, next) =>
       prisma.question.findMany({ where: { sessionId: session.id }, orderBy: { orderIndex: 'asc' } }),
     ]);
 
+    // Both outputs come from the same call, so they share prompt/input refs.
+    const auditRefs = {
+      modelVersion: generated.model,
+      promptRef: generated.promptVersion,
+      inputRef: `template:${session.template.id}+resume:${resumeFileRef}`,
+    };
     if (session.template.questionMode === 'AI') {
       await logAuditEvent({
         actorType: 'system',
         action: 'question_generated',
         entityType: 'candidate_session',
         entityId: session.id,
-        modelVersion: generated.model,
+        ...auditRefs,
+        outputRef: `questions:session:${session.id}`,
         purpose: 'Personalized interview question generation from JD + resume',
       });
     }
@@ -220,7 +227,8 @@ router.post('/:token/resume', upload.single('resume'), async (req, res, next) =>
       action: 'resume_jd_scored',
       entityType: 'candidate_session',
       entityId: session.id,
-      modelVersion: generated.model,
+      ...auditRefs,
+      outputRef: `candidate_session:${session.id}.resume_jd_score`,
       purpose: 'LLM-based resume-vs-JD match scoring',
     });
 
