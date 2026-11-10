@@ -12,6 +12,8 @@ jest.mock('../src/db/prismaClient', () => {
     },
     response: { create: jest.fn(), findFirst: jest.fn(), findMany: jest.fn(), count: jest.fn() },
     auditLog: { create: jest.fn() },
+    humanReviewRequest: { findMany: jest.fn(), findFirst: jest.fn(), create: jest.fn() },
+    evaluation: { findFirst: jest.fn() },
     $transaction: jest.fn((arg) => (typeof arg === 'function' ? arg(prisma) : Promise.all(arg))),
   };
   return prisma;
@@ -86,6 +88,18 @@ describe('GET /api/sessions/:token', () => {
     prisma.question.findMany.mockResolvedValue([
       { id: 'q1', orderIndex: 0, questionText: 'Q1', responses: [{ responseText: 'A1' }] },
     ]);
+    prisma.humanReviewRequest.findMany.mockResolvedValue([
+      {
+        id: 'rr_1',
+        status: 'RESOLVED',
+        reason: 'r',
+        outcome: 'upheld',
+        resolutionNotes: 'internal only',
+        candidateResponse: 'We reviewed it.',
+        requestedAt: new Date('2026-07-02'),
+        resolvedAt: new Date('2026-07-03'),
+      },
+    ]);
 
     const res = await request(app).get(`/api/sessions/${TOKEN}`);
 
@@ -96,6 +110,62 @@ describe('GET /api/sessions/:token', () => {
     expect(res.body.transcript).toEqual([
       { questionId: 'q1', orderIndex: 0, questionText: 'Q1', responseText: 'A1' },
     ]);
+    // Candidate view must not leak internal reviewer notes or the outcome.
+    expect(res.body.reviewRequests[0].candidateResponse).toBe('We reviewed it.');
+    expect(res.body.reviewRequests[0]).not.toHaveProperty('resolutionNotes');
+    expect(res.body.reviewRequests[0]).not.toHaveProperty('outcome');
+  });
+});
+
+describe('POST /api/sessions/:token/review-requests', () => {
+  const url = `/api/sessions/${TOKEN}/review-requests`;
+
+  it('returns 400 without a reason', async () => {
+    const res = await request(app).post(url).send({ reason: '   ' });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 409 when the interview is not complete', async () => {
+    prisma.candidateSession.findUnique.mockResolvedValue(baseSession({ status: 'IN_PROGRESS' }));
+    const res = await request(app).post(url).send({ reason: 'Please review' });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('session_not_complete');
+  });
+
+  it('returns 409 when a request is already open', async () => {
+    prisma.candidateSession.findUnique.mockResolvedValue(baseSession({ status: 'COMPLETED' }));
+    prisma.humanReviewRequest.findFirst.mockResolvedValue({ id: 'rr_open' });
+    const res = await request(app).post(url).send({ reason: 'Please review' });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('review_already_open');
+    expect(prisma.humanReviewRequest.create).not.toHaveBeenCalled();
+  });
+
+  it('creates a request linked to the latest evaluation and audit-logs it', async () => {
+    prisma.candidateSession.findUnique.mockResolvedValue(baseSession({ status: 'COMPLETED' }));
+    prisma.humanReviewRequest.findFirst.mockResolvedValue(null);
+    prisma.evaluation.findFirst.mockResolvedValue({ id: 'eval_1' });
+    prisma.humanReviewRequest.create.mockResolvedValue({
+      id: 'rr_1',
+      status: 'OPEN',
+      reason: 'Please review',
+      requestedAt: new Date(),
+      resolvedAt: null,
+      candidateResponse: null,
+    });
+    prisma.candidate.findUnique.mockResolvedValue({ id: 'cand_1' });
+
+    const res = await request(app).post(url).send({ reason: '  Please review  ' });
+
+    expect(res.status).toBe(201);
+    expect(prisma.humanReviewRequest.create).toHaveBeenCalledWith({
+      data: { sessionId: 'sess_1', evaluationId: 'eval_1', reason: 'Please review' },
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ action: 'human_review_requested', actorId: 'cand_1' }),
+      })
+    );
   });
 });
 

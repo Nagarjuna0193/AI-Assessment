@@ -4,6 +4,7 @@ jest.mock('../src/db/prismaClient', () => ({
   question: { findMany: jest.fn() },
   evaluation: { create: jest.fn() },
   auditLog: { create: jest.fn() },
+  humanReviewRequest: { findUnique: jest.fn(), update: jest.fn() },
 }));
 
 jest.mock('../src/services/anthropicService', () => {
@@ -59,7 +60,8 @@ describe('GET /api/interviews (list templates)', () => {
             status: 'COMPLETED',
             resumeJdScore: 82,
             createdAt: new Date('2026-07-02'),
-            evaluations: [{ overallScore: 78 }],
+            evaluations: [{ overallScore: 78, recommendation: 'advance' }],
+            humanReviewRequests: [{ id: 'rr_1' }],
           },
           {
             id: 'sess_2',
@@ -69,6 +71,7 @@ describe('GET /api/interviews (list templates)', () => {
             resumeJdScore: null,
             createdAt: new Date('2026-07-03'),
             evaluations: [],
+            humanReviewRequests: [],
           },
         ],
       },
@@ -86,6 +89,9 @@ describe('GET /api/interviews (list templates)', () => {
     expect(template.statusCounts).toEqual({ COMPLETED: 1, INVITED: 1 });
     expect(template.sessions[0].evaluationScore).toBe(78);
     expect(template.sessions[1].evaluationScore).toBeNull();
+    expect(template.sessions[0].recommendation).toBe('advance');
+    expect(template.sessions[0].openReviewRequests).toBe(1);
+    expect(template.sessions[1].openReviewRequests).toBe(0);
   });
 });
 
@@ -142,6 +148,20 @@ describe('GET /api/interviews/:id (template + session detail)', () => {
         { id: 'q1', orderIndex: 0, questionText: 'Q1', responses: [{ responseText: 'A1' }] },
       ],
       evaluations: [{ id: 'eval_1', overallScore: 78, summaryText: 'Good fit', scorecard: [] }],
+      humanReviewRequests: [
+        {
+          id: 'rr_1',
+          status: 'RESOLVED',
+          reason: 'Please re-check Q2',
+          evaluationId: 'eval_1',
+          outcome: 'upheld',
+          resolutionNotes: 'Re-read Q2; score stands',
+          candidateResponse: 'We reviewed your interview.',
+          resolvedByUser: { email: 'reviewer@acme.com' },
+          requestedAt: new Date('2026-07-02'),
+          resolvedAt: new Date('2026-07-03'),
+        },
+      ],
     });
 
     const res = await request(app).get('/api/interviews/sess_1').set('Cookie', orgSessionCookie());
@@ -154,6 +174,9 @@ describe('GET /api/interviews/:id (template + session detail)', () => {
       { questionId: 'q1', orderIndex: 0, questionText: 'Q1', responseText: 'A1' },
     ]);
     expect(res.body.evaluation.overallScore).toBe(78);
+    expect(res.body.reviewRequests).toEqual([
+      expect.objectContaining({ id: 'rr_1', outcome: 'upheld', resolvedBy: 'reviewer@acme.com' }),
+    ]);
   });
 });
 

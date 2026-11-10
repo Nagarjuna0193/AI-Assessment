@@ -116,13 +116,14 @@ model CandidateSession {
   createdAt          DateTime      @default(now()) @map("created_at")
   updatedAt          DateTime      @updatedAt @map("updated_at")
 
-  template          InterviewTemplate  @relation(fields: [templateId], references: [id])
-  organization      Organization       @relation(fields: [orgId], references: [id])
-  consentRecord     ConsentRecord?     @relation(fields: [consentRecordId], references: [id])
-  questions         Question[]
-  responses         Response[]
-  evaluations       Evaluation[]
-  creditTransaction CreditTransaction?
+  template            InterviewTemplate    @relation(fields: [templateId], references: [id])
+  organization        Organization         @relation(fields: [orgId], references: [id])
+  consentRecord       ConsentRecord?       @relation(fields: [consentRecordId], references: [id])
+  questions           Question[]
+  responses           Response[]
+  evaluations         Evaluation[]
+  creditTransaction   CreditTransaction?
+  humanReviewRequests HumanReviewRequest[]
 
   @@index([orgId])
   @@index([templateId])
@@ -152,9 +153,10 @@ model OrgUser {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  organization       Organization        @relation(fields: [orgId], references: [id])
+  organization       Organization         @relation(fields: [orgId], references: [id])
   loginOtps          LoginOtp[]
   interviewTemplates InterviewTemplate[]
+  resolvedReviews    HumanReviewRequest[]
 
   @@index([orgId])
   @@map("org_users")
@@ -247,15 +249,53 @@ model Evaluation {
   modelVersion         String?   @map("model_version")
   // Phase 5: e.g. "evaluation.v2" — see anthropicService.PROMPT_VERSIONS.
   promptVersion        String?   @map("prompt_version")
+  // Superseded by human_review_requests (Phase 6) — a candidate can ask for
+  // review before any evaluation exists, and a request needs its own
+  // status/outcome trail. Kept (unused) to avoid a destructive migration.
   humanReviewRequested Boolean   @default(false) @map("human_review_requested")
   humanReviewNotes     String?   @map("human_review_notes")
   evaluatedAt          DateTime? @map("evaluated_at")
   createdAt            DateTime  @default(now()) @map("created_at")
 
-  session CandidateSession @relation(fields: [sessionId], references: [id])
+  session             CandidateSession     @relation(fields: [sessionId], references: [id])
+  humanReviewRequests HumanReviewRequest[]
 
   @@index([sessionId])
   @@map("evaluations")
+}
+
+enum HumanReviewStatus {
+  OPEN
+  RESOLVED
+}
+
+// Phase 6 / DPDP human-review path: a candidate asks for a person to review
+// the AI-assisted assessment of their interview; an org_user records the
+// outcome. See docs/COMPLIANCE.md ("Human-review path").
+model HumanReviewRequest {
+  id                  String            @id @default(uuid())
+  sessionId           String            @map("session_id")
+  // Latest evaluation at the time of the request, if one existed.
+  evaluationId        String?           @map("evaluation_id")
+  reason              String
+  status              HumanReviewStatus @default(OPEN)
+  // "upheld" | "revised" — set on resolution.
+  outcome             String?
+  // Internal reviewer notes (not shown to the candidate).
+  resolutionNotes     String?           @map("resolution_notes")
+  // Reply shown to the candidate on their invite page.
+  candidateResponse   String?           @map("candidate_response")
+  resolvedByOrgUserId String?           @map("resolved_by_org_user_id")
+  requestedAt         DateTime          @default(now()) @map("requested_at")
+  resolvedAt          DateTime?         @map("resolved_at")
+
+  session        CandidateSession @relation(fields: [sessionId], references: [id])
+  evaluation     Evaluation?      @relation(fields: [evaluationId], references: [id])
+  resolvedByUser OrgUser?         @relation(fields: [resolvedByOrgUserId], references: [id])
+
+  @@index([sessionId])
+  @@index([status])
+  @@map("human_review_requests")
 }
 
 model ConsentRecord {

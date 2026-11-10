@@ -36,6 +36,19 @@ function mapAnthropicError(err, res, declinedError, failedError) {
   return false;
 }
 
+const MAX_REVIEW_REASON_LENGTH = 2000;
+
+function toCandidateReviewView(r) {
+  return {
+    id: r.id,
+    status: r.status,
+    reason: r.reason,
+    requestedAt: r.requestedAt,
+    resolvedAt: r.resolvedAt,
+    candidateResponse: r.candidateResponse,
+  };
+}
+
 function mapVoiceProviderError(err, res, errorCode) {
   if (err instanceof voiceService.VoiceProviderError) {
     res.status(502).json({ error: errorCode, message: err.message });
@@ -54,11 +67,17 @@ router.get('/:token', async (req, res, next) => {
       return res.status(404).json({ error: 'session_not_found' });
     }
 
-    const questions = await prisma.question.findMany({
-      where: { sessionId: session.id },
-      orderBy: { orderIndex: 'asc' },
-      include: { responses: true },
-    });
+    const [questions, reviewRequests] = await Promise.all([
+      prisma.question.findMany({
+        where: { sessionId: session.id },
+        orderBy: { orderIndex: 'asc' },
+        include: { responses: true },
+      }),
+      prisma.humanReviewRequest.findMany({
+        where: { sessionId: session.id },
+        orderBy: { requestedAt: 'desc' },
+      }),
+    ]);
 
     res.json({
       status: session.status,
@@ -73,6 +92,8 @@ router.get('/:token', async (req, res, next) => {
         questionText: q.questionText,
         responseText: q.responses[0] ? q.responses[0].responseText : null,
       })),
+      // Candidate-safe view only: no internal notes, outcome, or scores.
+      reviewRequests: reviewRequests.map(toCandidateReviewView),
     });
   } catch (err) {
     next(err);
@@ -362,6 +383,72 @@ router.post('/:token/answers/transcribe', upload.single('audio'), async (req, re
     });
 
     res.status(200).json({ text: transcription.text });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Phase 6 / DPDP: the candidate asks for a human to review the AI-assisted
+// assessment of their completed interview. One OPEN request at a time; a
+// new one can be filed after the previous is resolved.
+router.post('/:token/review-requests', async (req, res, next) => {
+  try {
+    const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
+    if (!reason) {
+      return res.status(400).json({ error: 'invalid_request', message: 'reason is required' });
+    }
+    if (reason.length > MAX_REVIEW_REASON_LENGTH) {
+      return res.status(400).json({
+        error: 'invalid_request',
+        message: `reason must be at most ${MAX_REVIEW_REASON_LENGTH} characters`,
+      });
+    }
+
+    const session = await findSessionByToken(req.params.token);
+    if (!session) {
+      return res.status(404).json({ error: 'session_not_found' });
+    }
+    if (session.status !== 'COMPLETED') {
+      return res.status(409).json({
+        error: 'session_not_complete',
+        message: 'Human review can be requested once the interview is complete',
+      });
+    }
+
+    const open = await prisma.humanReviewRequest.findFirst({ where: { sessionId: session.id, status: 'OPEN' } });
+    if (open) {
+      return res.status(409).json({
+        error: 'review_already_open',
+        message: 'A review request for this interview is already being handled',
+      });
+    }
+
+    const latestEvaluation = await prisma.evaluation.findFirst({
+      where: { sessionId: session.id },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+
+    const reviewRequest = await prisma.humanReviewRequest.create({
+      data: {
+        sessionId: session.id,
+        evaluationId: latestEvaluation ? latestEvaluation.id : null,
+        reason,
+      },
+    });
+
+    const candidate = await prisma.candidate.findUnique({ where: { email: session.email } });
+    await logAuditEvent({
+      actorType: 'candidate',
+      actorId: candidate ? candidate.id : null,
+      action: 'human_review_requested',
+      entityType: 'human_review_request',
+      entityId: reviewRequest.id,
+      inputRef: latestEvaluation ? `evaluation:${latestEvaluation.id}` : `candidate_session:${session.id}`,
+      purpose: 'DPDP: candidate request for human review of AI-assisted assessment',
+    });
+
+    res.status(201).json({ reviewRequest: toCandidateReviewView(reviewRequest) });
   } catch (err) {
     next(err);
   }

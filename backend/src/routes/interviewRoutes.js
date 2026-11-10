@@ -33,7 +33,10 @@ router.get('/', requireOrgAuth, async (req, res, next) => {
       include: {
         candidateSessions: {
           orderBy: { createdAt: 'desc' },
-          include: { evaluations: { orderBy: { createdAt: 'desc' }, take: 1 } },
+          include: {
+            evaluations: { orderBy: { createdAt: 'desc' }, take: 1 },
+            humanReviewRequests: { where: { status: 'OPEN' }, select: { id: true } },
+          },
         },
       },
     });
@@ -61,6 +64,8 @@ router.get('/', requireOrgAuth, async (req, res, next) => {
             resumeJdScore: s.resumeJdScore,
             createdAt: s.createdAt,
             evaluationScore: s.evaluations[0] ? s.evaluations[0].overallScore : null,
+            recommendation: s.evaluations[0] ? s.evaluations[0].recommendation : null,
+            openReviewRequests: s.humanReviewRequests.length,
           })),
         };
       }),
@@ -82,6 +87,10 @@ router.get('/:id', requireOrgAuth, async (req, res, next) => {
         template: true,
         questions: { orderBy: { orderIndex: 'asc' }, include: { responses: true } },
         evaluations: { orderBy: { createdAt: 'desc' }, take: 1 },
+        humanReviewRequests: {
+          orderBy: { requestedAt: 'desc' },
+          include: { resolvedByUser: { select: { email: true } } },
+        },
       },
     });
 
@@ -115,7 +124,81 @@ router.get('/:id', requireOrgAuth, async (req, res, next) => {
         responseText: q.responses[0] ? q.responses[0].responseText : null,
       })),
       evaluation: session.evaluations[0] || null,
+      reviewRequests: session.humanReviewRequests.map((r) => ({
+        id: r.id,
+        status: r.status,
+        reason: r.reason,
+        evaluationId: r.evaluationId,
+        outcome: r.outcome,
+        resolutionNotes: r.resolutionNotes,
+        candidateResponse: r.candidateResponse,
+        resolvedBy: r.resolvedByUser ? r.resolvedByUser.email : null,
+        requestedAt: r.requestedAt,
+        resolvedAt: r.resolvedAt,
+      })),
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const REVIEW_OUTCOMES = ['upheld', 'revised'];
+
+// Phase 6 / DPDP: a person (any org_user role) records the outcome of a
+// candidate's human-review request. `resolutionNotes` stays internal;
+// `candidateResponse` is shown to the candidate on their invite page.
+router.post('/:id/review-requests/:requestId/resolve', requireOrgAuth, async (req, res, next) => {
+  try {
+    const { id, requestId } = req.params;
+    const { outcome } = req.body;
+    const resolutionNotes = typeof req.body.resolutionNotes === 'string' ? req.body.resolutionNotes.trim() : '';
+    const candidateResponse =
+      typeof req.body.candidateResponse === 'string' ? req.body.candidateResponse.trim() : '';
+
+    if (!REVIEW_OUTCOMES.includes(outcome) || !resolutionNotes || !candidateResponse) {
+      return res.status(400).json({
+        error: 'invalid_request',
+        message: `outcome (${REVIEW_OUTCOMES.join(' | ')}), resolutionNotes, and candidateResponse are required`,
+      });
+    }
+
+    const session = await prisma.candidateSession.findUnique({ where: { id } });
+    if (!session || session.orgId !== req.orgUser.orgId) {
+      return res.status(404).json({ error: 'session_not_found' });
+    }
+
+    const reviewRequest = await prisma.humanReviewRequest.findUnique({ where: { id: requestId } });
+    if (!reviewRequest || reviewRequest.sessionId !== id) {
+      return res.status(404).json({ error: 'review_request_not_found' });
+    }
+    if (reviewRequest.status !== 'OPEN') {
+      return res.status(409).json({ error: 'review_already_resolved' });
+    }
+
+    const updated = await prisma.humanReviewRequest.update({
+      where: { id: requestId },
+      data: {
+        status: 'RESOLVED',
+        outcome,
+        resolutionNotes,
+        candidateResponse,
+        resolvedByOrgUserId: req.orgUser.orgUserId,
+        resolvedAt: new Date(),
+      },
+    });
+
+    await logAuditEvent({
+      actorType: 'recruiter',
+      actorId: req.orgUser.orgUserId,
+      action: 'human_review_resolved',
+      entityType: 'human_review_request',
+      entityId: requestId,
+      inputRef: reviewRequest.evaluationId ? `evaluation:${reviewRequest.evaluationId}` : `candidate_session:${id}`,
+      outputRef: `outcome:${outcome}`,
+      purpose: 'DPDP: human review of AI-assisted assessment completed',
+    });
+
+    res.status(200).json({ reviewRequest: updated });
   } catch (err) {
     next(err);
   }
