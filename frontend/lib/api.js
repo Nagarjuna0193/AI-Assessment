@@ -58,6 +58,8 @@ export const api = {
   listTemplates: () => request('/api/interviews'),
   getSessionDetail: (sessionId) => request(`/api/interviews/${sessionId}`),
   evaluateSession: (sessionId) => request(`/api/interviews/${sessionId}/evaluate`, { method: 'POST', body: {} }),
+  resolveReviewRequest: (sessionId, requestId, payload) =>
+    request(`/api/interviews/${sessionId}/review-requests/${requestId}/resolve`, { method: 'POST', body: payload }),
 
   // Create Interview admin page (org ADMIN only)
   createTemplate: (formData) => requestFormData('/api/templates', formData),
@@ -81,6 +83,8 @@ export const api = {
     formData.append('audio', audioBlob, 'answer.webm');
     return requestFormData(`/api/sessions/${token}/answers/transcribe`, formData);
   },
+  requestHumanReview: (token, reason) =>
+    request(`/api/sessions/${token}/review-requests`, { method: 'POST', body: { reason } }),
   sessionQuestionAudioUrl: (token, questionId) =>
     `${API_BASE_URL}/api/sessions/${token}/questions/${questionId}/audio`,
 };

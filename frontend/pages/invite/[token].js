@@ -72,16 +72,122 @@ export default function InvitePage() {
   if (session.status === 'IN_PROGRESS') {
     return <InterviewStep token={token} session={session} onComplete={() => load(token)} />;
   }
+  return <CompleteStep token={token} session={session} onChange={() => load(token)} />;
+}
+
+const MAX_REVIEW_REASON_LENGTH = 2000;
+
+// Phase 6 / DPDP human-review path, candidate side. The candidate sees only
+// their own request, its status, and the reviewer's reply — never scores,
+// the AI recommendation, or internal reviewer notes.
+function CompleteStep({ token, session, onChange }) {
+  const [showForm, setShowForm] = useState(false);
+  const [reason, setReason] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  const reviewRequests = session.reviewRequests || [];
+  const hasOpen = reviewRequests.some((r) => r.status === 'OPEN');
+  const canRequest = session.status === 'COMPLETED' && !hasOpen;
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.requestHumanReview(token, reason);
+      setShowForm(false);
+      setReason('');
+      await onChange();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not submit your request. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <Layout>
       <div className="bg-white border border-slate-200 rounded-lg p-8 text-center">
         <h1 className="text-xl font-semibold text-slate-800 mb-2">Interview complete</h1>
         <p className="text-slate-500">
           Thank you for completing your interview, {session.candidateName}. Your responses have
-          been recorded and will be reviewed by the hiring team. If you have questions about how
-          your data was used or would like to request a human review of your evaluation, please
-          contact the recruiter who invited you.
+          been recorded and will be reviewed by the hiring team.
         </p>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg p-6 mt-6">
+        <h2 className="font-medium text-slate-800 mb-2">Request a human review</h2>
+        <p className="text-sm text-slate-500">
+          Your interview is assessed with the help of AI, and a person on the hiring team makes the
+          final decision. If you think something was missed or misunderstood, you can ask a person to
+          review the assessment. Their reply will appear on this page.
+        </p>
+
+        {reviewRequests.length > 0 && (
+          <ul className="mt-4 space-y-3">
+            {reviewRequests.map((r) => (
+              <li key={r.id} className="border border-slate-200 rounded-md p-4 text-sm">
+                <div className="flex flex-wrap justify-between gap-2">
+                  <span className="font-medium text-slate-800">
+                    {r.status === 'OPEN' ? 'In review' : 'Reviewed'}
+                  </span>
+                  <span className="text-slate-500">
+                    Requested {new Date(r.requestedAt).toLocaleDateString()}
+                  </span>
+                </div>
+                <p className="text-slate-600 mt-2 whitespace-pre-wrap">{r.reason}</p>
+                {r.candidateResponse && (
+                  <div className="mt-3 border-t border-slate-100 pt-3">
+                    <p className="text-slate-500 text-xs mb-1">Response from the hiring team</p>
+                    <p className="text-slate-800 whitespace-pre-wrap">{r.candidateResponse}</p>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {canRequest && !showForm && (
+          <button
+            onClick={() => setShowForm(true)}
+            className="mt-4 border border-slate-300 rounded-md px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
+          >
+            {reviewRequests.length > 0 ? 'Request another review' : 'Request a human review'}
+          </button>
+        )}
+
+        {canRequest && showForm && (
+          <form onSubmit={handleSubmit} className="mt-4 space-y-3">
+            <label className="block text-sm">
+              <span className="text-slate-700">What would you like the reviewer to look at?</span>
+              <textarea
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                rows={4}
+                maxLength={MAX_REVIEW_REASON_LENGTH}
+                className="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
+              />
+            </label>
+            {error && <p className="text-sm text-red-600">{error}</p>}
+            <div className="flex gap-3">
+              <button
+                type="submit"
+                disabled={!reason.trim() || submitting}
+                className="bg-slate-900 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-40 hover:bg-slate-800"
+              >
+                {submitting ? 'Submitting…' : 'Submit request'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowForm(false)}
+                className="text-sm text-slate-500 hover:text-slate-800"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </Layout>
   );

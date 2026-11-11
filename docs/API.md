@@ -171,9 +171,19 @@ progress on a page refresh.
   "resumeUploaded": true,
   "transcript": [
     { "questionId": "...", "orderIndex": 0, "questionText": "...", "responseText": "..." }
+  ],
+  "reviewRequests": [
+    {
+      "id": "...", "status": "RESOLVED", "reason": "...",
+      "requestedAt": "...", "resolvedAt": "...",
+      "candidateResponse": "..."   // null until resolved
+    }
   ]
 }
 ```
+
+`reviewRequests` (Phase 6) is the candidate-safe view: no scores, outcome,
+or internal reviewer notes.
 
 **Errors**
 - `404 session_not_found` — invalid or expired invite link.
@@ -267,6 +277,31 @@ just session/token-scoped now. Does not persist a response.
 
 Writes an `audit_log` entry (`action: voice_answer_transcribed`).
 
+### `POST /api/sessions/:token/review-requests` (Phase 6)
+
+The candidate asks for a person to review the AI-assisted assessment of
+their interview (DPDP human-review path). Links the request to the latest
+evaluation if one exists; works before evaluation too.
+
+**Request body**
+```json
+{ "reason": "I think my answer to question 3 was misread." }   // required, max 2000 chars
+```
+
+**Response `201`**
+```json
+{ "reviewRequest": { "id": "...", "status": "OPEN", "reason": "...", "requestedAt": "...", "resolvedAt": null, "candidateResponse": null } }
+```
+
+**Errors**
+- `400 invalid_request` — missing/empty or over-long `reason`.
+- `404 session_not_found`
+- `409 session_not_complete` — the interview isn't finished.
+- `409 review_already_open` — a request for this session is still open.
+
+Writes an `audit_log` entry (`action: human_review_requested`, `actor_type:
+candidate`).
+
 ### `GET /api/sessions/:token/questions/:questionId/audio`
 
 TTS — identical behavior to the old (Phase 4) endpoint, session/token-scoped.
@@ -313,7 +348,9 @@ dashboard's "expandable to candidate sessions" list needs one request.
           "status": "COMPLETED",
           "resumeJdScore": 82,
           "createdAt": "...",
-          "evaluationScore": 78
+          "evaluationScore": 78,
+          "recommendation": "advance",   // latest evaluation's, or null (Phase 6)
+          "openReviewRequests": 1        // count of OPEN human-review requests (Phase 6)
         }
       ]
     }
@@ -348,7 +385,14 @@ its existence isn't leaked across orgs.
   "transcript": [
     { "questionId": "...", "orderIndex": 0, "questionText": "...", "responseText": "..." }
   ],
-  "evaluation": { "id": "...", "overallScore": 78, "summaryText": "...", "scorecard": [...] } // or null
+  "evaluation": { "id": "...", "overallScore": 78, "recommendation": "...", "strengths": [...], "concerns": [...], "scorecard": [...], ... }, // or null
+  "reviewRequests": [   // Phase 6, newest first
+    {
+      "id": "...", "status": "OPEN", "reason": "...", "evaluationId": "...",
+      "outcome": null, "resolutionNotes": null, "candidateResponse": null,
+      "resolvedBy": null, "requestedAt": "...", "resolvedAt": null
+    }
+  ]
 }
 ```
 
@@ -400,6 +444,35 @@ call adds a new row; `GET /api/interviews/:id` returns the latest.
 Writes an `audit_log` entry (`action: evaluation_generated`, `actor_type:
 recruiter` with the triggering org_user's id, plus `prompt_ref`, `input_ref`,
 `output_ref`).
+
+---
+
+## `POST /api/interviews/:id/review-requests/:requestId/resolve` (Phase 6)
+
+Records the outcome of a candidate's human-review request. **Requires an
+org_user session** (any role). Marking `revised` does not change the stored
+AI evaluation; it records that a person disagreed with it.
+
+**Request body**
+```json
+{
+  "outcome": "upheld",                 // upheld | revised
+  "resolutionNotes": "...",            // required, internal only
+  "candidateResponse": "..."           // required, shown to the candidate
+}
+```
+
+**Response `200`** — `{ "reviewRequest": { ...full row, "status": "RESOLVED" } }`
+
+**Errors**
+- `400 invalid_request`
+- `401 auth_required`
+- `404 session_not_found` — no such session, or another org's.
+- `404 review_request_not_found` — no such request on this session.
+- `409 review_already_resolved`
+
+Writes an `audit_log` entry (`action: human_review_resolved`, `actor_type:
+recruiter` with the org_user id, `output_ref: outcome:<outcome>`).
 
 ---
 

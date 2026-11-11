@@ -86,6 +86,7 @@ Schema defined in `backend/prisma/schema.prisma` (Prisma; see
 | `interview_templates` (Phase 4.6) | The JD/role a recruiter is hiring for: `role_name`, `job_id` (free-text label, not an ATS FK), `job_description_text`, `question_mode` (`AI`/`MANUAL`), `manual_questions` (JSON, MANUAL mode only), `created_by_org_user_id`. One template, many candidates. |
 | `candidate_sessions` (Phase 4.6) | One invited candidate's attempt against a template — **replaces `interviews`** as the parent of `questions`/`responses`/`evaluations`. Carries `invite_token` (the candidate's only way to address their own session), `status`, `mode` (text/voice), `resume_file_ref`/`resume_text`, `resume_jd_score`/`resume_jd_rationale`, `consent_record_id`, timing, and `data_retention_until`. |
 | `questions` / `responses` / `evaluations` | Unchanged in purpose from Phase 1/2, just re-keyed to `session_id` (was `interview_id`) — one per `candidate_session` now instead of one per `interviews` row. |
+| `human_review_requests` (Phase 6) | DPDP human-review path: a candidate's request (`reason`, optional `evaluation_id` of the latest evaluation at the time) and its resolution (`status` OPEN/RESOLVED, `outcome` upheld/revised, internal `resolution_notes`, `candidate_response`, `resolved_by_org_user_id`, timestamps). Supersedes the unused `evaluations.human_review_requested`/`human_review_notes` columns, which are kept to avoid a destructive migration. |
 
 See `docs/DECISIONS.md` for the full Phase 4.6 migration rationale (why
 `interviews` was dropped rather than kept alongside sessions, why
@@ -219,3 +220,21 @@ with `input_ref` / `output_ref` pointers to the data used and produced.
 
 Re-running evaluation adds a new `evaluations` row (history kept); the
 reviewer UI shows the latest.
+
+## Feedback report & human review (Phase 6)
+
+- **Recruiter report**: `frontend/pages/dashboard/[id].js` renders the
+  latest evaluation through `frontend/components/FeedbackReport.js`:
+  overall score, recommendation badge (labelled advisory), model + prompt
+  version, strengths/concerns with evidence, and per-criterion 1-5 scores
+  with evidence and `Q<n>` references that match the numbered transcript
+  below it. Pre-v2 evaluations render with whatever fields they have. The
+  dashboard list shows each session's recommendation and a "Review
+  requested" badge when a request is open.
+- **Human review**: candidate files a request from the completion screen
+  of their invite link -> `human_review_requests` row (OPEN) + audit entry ->
+  reviewer sees it on the session page (`ReviewRequestsPanel`) and records
+  outcome + internal notes + reply -> row RESOLVED + audit entry ->
+  candidate sees the reply on their invite page. The candidate never sees
+  scores, the recommendation, or internal notes. Resolving doesn't edit the
+  AI evaluation; a `revised` outcome is the human override on record.

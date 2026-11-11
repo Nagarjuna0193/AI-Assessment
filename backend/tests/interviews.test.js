@@ -291,3 +291,99 @@ describe('POST /api/interviews/:id/evaluate', () => {
     expect(prisma.evaluation.create).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /api/interviews/:id/review-requests/:requestId/resolve', () => {
+  const url = '/api/interviews/sess_1/review-requests/rr_1/resolve';
+  const validBody = {
+    outcome: 'upheld',
+    resolutionNotes: 'Re-read all answers; score stands',
+    candidateResponse: 'A reviewer looked at your interview and the assessment stands.',
+  };
+
+  function mockOpenRequest() {
+    prisma.candidateSession.findUnique.mockResolvedValue({ id: 'sess_1', orgId: 'org_1' });
+    prisma.humanReviewRequest.findUnique.mockResolvedValue({
+      id: 'rr_1',
+      sessionId: 'sess_1',
+      evaluationId: 'eval_1',
+      status: 'OPEN',
+    });
+    prisma.humanReviewRequest.update.mockImplementation(({ data }) =>
+      Promise.resolve({ id: 'rr_1', sessionId: 'sess_1', ...data })
+    );
+  }
+
+  it('returns 401 without a session cookie', async () => {
+    const res = await request(app).post(url).send(validBody);
+    expect(res.status).toBe(401);
+    expect(prisma.humanReviewRequest.update).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for an invalid outcome or missing notes/response', async () => {
+    for (const body of [
+      { ...validBody, outcome: 'overturned' },
+      { ...validBody, resolutionNotes: '  ' },
+      { ...validBody, candidateResponse: undefined },
+    ]) {
+      const res = await request(app).post(url).set('Cookie', orgSessionCookie()).send(body);
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('invalid_request');
+    }
+    expect(prisma.humanReviewRequest.update).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for a session in another org", async () => {
+    mockOpenRequest();
+    prisma.candidateSession.findUnique.mockResolvedValue({ id: 'sess_1', orgId: 'org_other' });
+    const res = await request(app).post(url).set('Cookie', orgSessionCookie()).send(validBody);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('session_not_found');
+    expect(prisma.humanReviewRequest.update).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when the request belongs to a different session', async () => {
+    mockOpenRequest();
+    prisma.humanReviewRequest.findUnique.mockResolvedValue({ id: 'rr_1', sessionId: 'sess_2', status: 'OPEN' });
+    const res = await request(app).post(url).set('Cookie', orgSessionCookie()).send(validBody);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('review_request_not_found');
+  });
+
+  it('returns 409 when already resolved', async () => {
+    mockOpenRequest();
+    prisma.humanReviewRequest.findUnique.mockResolvedValue({ id: 'rr_1', sessionId: 'sess_1', status: 'RESOLVED' });
+    const res = await request(app).post(url).set('Cookie', orgSessionCookie()).send(validBody);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('review_already_resolved');
+    expect(prisma.humanReviewRequest.update).not.toHaveBeenCalled();
+  });
+
+  it('resolves the request, records the reviewer, and audit-logs it', async () => {
+    mockOpenRequest();
+    const res = await request(app).post(url).set('Cookie', orgSessionCookie()).send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(prisma.humanReviewRequest.update).toHaveBeenCalledWith({
+      where: { id: 'rr_1' },
+      data: expect.objectContaining({
+        status: 'RESOLVED',
+        outcome: 'upheld',
+        resolutionNotes: validBody.resolutionNotes,
+        candidateResponse: validBody.candidateResponse,
+        resolvedByOrgUserId: 'orguser_1',
+        resolvedAt: expect.any(Date),
+      }),
+    });
+    expect(res.body.reviewRequest.status).toBe('RESOLVED');
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        actorType: 'recruiter',
+        actorId: 'orguser_1',
+        action: 'human_review_resolved',
+        entityId: 'rr_1',
+        inputRef: 'evaluation:eval_1',
+        outputRef: 'outcome:upheld',
+      }),
+    });
+  });
+});

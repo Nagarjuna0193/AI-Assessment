@@ -2,6 +2,8 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '../../components/Layout';
 import RequireAuth from '../../components/RequireAuth';
+import FeedbackReport from '../../components/FeedbackReport';
+import ReviewRequestsPanel from '../../components/ReviewRequestsPanel';
 import { api, ApiError } from '../../lib/api';
 
 export default function SessionDetailPage() {
@@ -59,6 +61,8 @@ function SessionDetailContent() {
   }
 
   const { template, session, transcript, evaluation } = data;
+  const reviewRequests = data.reviewRequests || [];
+  const openReviews = reviewRequests.filter((r) => r.status === 'OPEN').length;
 
   return (
     <Layout>
@@ -88,28 +92,9 @@ function SessionDetailContent() {
       </section>
 
       <section className="bg-white border border-slate-200 rounded-lg p-5 mb-6">
-        <h2 className="font-medium text-slate-800 mb-3">Interview evaluation</h2>
+        <h2 className="font-medium text-slate-800 mb-3">Feedback report</h2>
         {evaluation ? (
-          <div className="space-y-3">
-            <p className="text-3xl font-semibold text-slate-900">
-              {evaluation.overallScore}
-              <span className="text-base font-normal text-slate-400">/100</span>
-            </p>
-            {evaluation.summaryText && <p className="text-slate-600 text-sm">{evaluation.summaryText}</p>}
-            {Array.isArray(evaluation.scorecard) && evaluation.scorecard.length > 0 && (
-              <div className="divide-y divide-slate-100 border border-slate-100 rounded-md mt-3">
-                {evaluation.scorecard.map((row, i) => (
-                  <div key={i} className="flex justify-between px-3 py-2 text-sm">
-                    <span className="text-slate-700">{row.criterion}</span>
-                    <span className="text-slate-500">
-                      {row.score}
-                      {row.notes ? ` — ${row.notes}` : ''}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <FeedbackReport evaluation={evaluation} />
         ) : session.status === 'COMPLETED' ? (
           <div>
             <p className="text-slate-500 text-sm mb-3">Not yet evaluated.</p>
@@ -129,15 +114,28 @@ function SessionDetailContent() {
         {error && <p className="text-sm text-red-600 mt-3">{error}</p>}
       </section>
 
+      <section
+        className={`bg-white border rounded-lg p-5 mb-6 ${openReviews ? 'border-amber-300' : 'border-slate-200'}`}
+      >
+        <h2 className="font-medium text-slate-800 mb-3">
+          Human review requests
+          {openReviews > 0 && <span className="ml-2 text-sm font-normal text-amber-700">({openReviews} open)</span>}
+        </h2>
+        <ReviewRequestsPanel sessionId={id} requests={reviewRequests} onChange={() => load(id)} />
+      </section>
+
       <section className="bg-white border border-slate-200 rounded-lg p-5">
         <h2 className="font-medium text-slate-800 mb-3">Transcript</h2>
         {transcript.length === 0 ? (
           <p className="text-slate-500 text-sm">No questions generated yet.</p>
         ) : (
           <div className="space-y-4">
-            {transcript.map((t) => (
+            {transcript.map((t, i) => (
               <div key={t.questionId} className="border-b border-slate-100 last:border-0 pb-4 last:pb-0">
-                <p className="text-sm font-medium text-slate-700">{t.questionText}</p>
+                <p className="text-sm font-medium text-slate-700">
+                  <span className="text-slate-400 mr-1">Q{i + 1}.</span>
+                  {t.questionText}
+                </p>
                 <p className="text-sm text-slate-500 mt-1">
                   {t.responseText || <span className="italic text-slate-400">No response yet</span>}
                 </p>

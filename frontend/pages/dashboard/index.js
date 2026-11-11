@@ -3,6 +3,7 @@ import { useRouter } from 'next/router';
 import Link from 'next/link';
 import Layout from '../../components/Layout';
 import RequireAuth from '../../components/RequireAuth';
+import { RecommendationBadge } from '../../components/FeedbackReport';
 import { api, ApiError } from '../../lib/api';
 
 const STATUS_STYLES = {
@@ -132,6 +133,12 @@ function TemplateCard({ template, expanded, onToggle, canInvite, onInvited }) {
                     {session.resumeJdScore != null && (
                       <span className="text-xs text-slate-500">JD fit: {session.resumeJdScore}</span>
                     )}
+                    {session.openReviewRequests > 0 && (
+                      <span className="text-xs font-medium px-2 py-1 rounded-full bg-amber-100 text-amber-800">
+                        Review requested
+                      </span>
+                    )}
+                    <RecommendationBadge recommendation={session.recommendation} />
                     {session.evaluationScore != null && (
                       <span className="text-sm font-medium text-slate-700">{session.evaluationScore}/100</span>
                     )}

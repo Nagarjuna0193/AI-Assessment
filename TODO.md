@@ -1,6 +1,6 @@
 # TODO / Phase Checklist
 
-Current phase: **Phase 5 — evaluation & structured feedback report done**
+Current phase: **Phase 6 — reporting & human review done** (next: Phase 7 compliance hardening)
 
 See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 
@@ -198,8 +198,27 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
       real `DATABASE_URL` / `ANTHROPIC_API_KEY`
 
 ## Phase 6 — Reporting & human review
-- [ ] Feedback report UI (recruiter-facing)
-- [ ] Human-review request path for candidates
+- [x] `human_review_requests` table + migration
+      (`backend/prisma/migrations/20261111010000_human_review_requests/`)
+- [x] Candidate: `POST /api/sessions/:token/review-requests` (completed
+      sessions only, one open at a time) + candidate-safe review status on
+      `GET /api/sessions/:token`; request form + reply display on the
+      invite completion screen (`frontend/pages/invite/[token].js`)
+- [x] Reviewer: review requests on `GET /api/interviews/:id`, open count +
+      recommendation on the list, `POST /api/interviews/:id/review-requests/:requestId/resolve`
+      (upheld/revised, internal notes, reply to candidate)
+- [x] Feedback report UI (recruiter-facing): `frontend/components/FeedbackReport.js`
+      renders evaluation.v2 (recommendation, strengths/concerns, criteria
+      with evidence + Q refs); numbered transcript; recommendation and
+      "Review requested" badges on the dashboard list
+- [x] Review panel: `frontend/components/ReviewRequestsPanel.js` on the
+      session detail page
+- [x] Both sides audit-logged (`human_review_requested`, `human_review_resolved`)
+- [x] Tests: request + resolve endpoints — 82/82 passing
+- [ ] Apply migration to the real DB (`npx prisma migrate deploy`) — needs
+      the real `DATABASE_URL` (same as the Phase 5 migration)
+- [ ] Define the human-review process with the pilot client: response-time
+      target, queue owner, escalation route (`docs/COMPLIANCE.md`)
 
 ## Phase 7 — Compliance hardening
 - [ ] Full DPDP checklist in `docs/COMPLIANCE.md` reviewed and closed out
@@ -227,3 +246,6 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
   an admin UI as of Phase 4.6
 - Automatic invite emails to candidates (Resend is already wired for OTP
   codes; would reuse `emailService`)
+- Email notifications for human-review requests (to reviewers) and
+  resolutions (to candidates) — same channel decision as invite emails
+- Printable / exportable feedback report (PDF) — not requested yet

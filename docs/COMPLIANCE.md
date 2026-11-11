@@ -53,10 +53,28 @@ requested — decision logic and data flow are documented from day one.
 
 ## Human-review path
 
-- [ ] Candidate can request human review of an AI-generated evaluation
-- [ ] Human-review request and outcome are recorded
+- [x] Candidate can request human review of an AI-generated evaluation
+      (Phase 6) — from the completion screen of their invite link
+      (`POST /api/sessions/:token/review-requests`). Available once the
+      interview is complete, whether or not an evaluation has run yet; one
+      open request at a time.
+- [x] Human-review request and outcome are recorded (Phase 6) —
+      `human_review_requests` table (reason, linked evaluation if any,
+      status, outcome `upheld`/`revised`, internal notes, reply to the
+      candidate, who resolved it and when). Both the request
+      (`human_review_requested`, actor `candidate`) and the resolution
+      (`human_review_resolved`, actor `recruiter` + org_user id) are written
+      to `audit_log`.
 - [ ] Process defined for who performs human review and how disputes are
-      resolved
+      resolved — **partly done**. What the product enforces: any org_user
+      (ADMIN or REVIEWER) of the candidate's organization can resolve a
+      request; resolving requires internal notes and a written reply to the
+      candidate; the candidate sees the reply on their invite page and can
+      file a new request after a resolution. **Still open (business/client
+      decision, not code):** a response-time commitment, who at the client
+      org owns the queue, and an escalation route if the candidate still
+      disagrees. Reviewers are not notified by email yet — open requests
+      show as a "Review requested" badge on the dashboard.
 
 ## Documentation readiness (in case of future audit request)
 
