@@ -7,6 +7,8 @@ import { api, ApiError } from '../lib/api';
 // shown on the candidate's invite page.
 
 const OUTCOME_LABELS = { upheld: 'Assessment upheld', revised: 'Assessment revised' };
+// Set by the Phase 7 anonymization, not chosen by a reviewer.
+const CLOSED_LABELS = { ...OUTCOME_LABELS, data_erased: 'Closed: candidate data erased' };
 
 function ResolveForm({ sessionId, request, onResolved }) {
   const [outcome, setOutcome] = useState('upheld');
@@ -99,7 +101,7 @@ export default function ReviewRequestsPanel({ sessionId, requests, onChange }) {
         >
           <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
             <span className="font-medium text-slate-800">
-              {r.status === 'OPEN' ? 'Open request' : OUTCOME_LABELS[r.outcome] || 'Resolved'}
+              {r.status === 'OPEN' ? 'Open request' : CLOSED_LABELS[r.outcome] || 'Resolved'}
             </span>
             <span className="text-slate-500">Requested {new Date(r.requestedAt).toLocaleString()}</span>
           </div>

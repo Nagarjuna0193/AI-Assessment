@@ -85,6 +85,9 @@ export const api = {
   },
   requestHumanReview: (token, reason) =>
     request(`/api/sessions/${token}/review-requests`, { method: 'POST', body: { reason } }),
+  recordProctoringEvent: (token, eventType) =>
+    request(`/api/sessions/${token}/proctoring-events`, { method: 'POST', body: { eventType } }),
+  requestErasure: (token) => request(`/api/sessions/${token}/erasure`, { method: 'POST', body: { confirm: true } }),
   sessionQuestionAudioUrl: (token, questionId) =>
     `${API_BASE_URL}/api/sessions/${token}/questions/${questionId}/audio`,
 };

@@ -60,7 +60,7 @@ function SessionDetailContent() {
     );
   }
 
-  const { template, session, transcript, evaluation } = data;
+  const { template, session, transcript, evaluation, proctoring } = data;
   const reviewRequests = data.reviewRequests || [];
   const openReviews = reviewRequests.filter((r) => r.status === 'OPEN').length;
 
@@ -72,7 +72,20 @@ function SessionDetailContent() {
           {session.email} · {template.roleName}
           {template.jobId ? ` (${template.jobId})` : ''} · {session.status}
         </p>
+        {!session.anonymizedAt && session.dataRetentionUntil && (
+          <p className="text-xs text-slate-400 mt-1">
+            Personal data kept until {new Date(session.dataRetentionUntil).toLocaleDateString()}
+          </p>
+        )}
       </div>
+
+      {session.anonymizedAt && (
+        <div className="bg-slate-100 border border-slate-200 rounded-lg p-4 mb-6 text-sm text-slate-700">
+          Personal data for this candidate was anonymized on{' '}
+          {new Date(session.anonymizedAt).toLocaleDateString()} (retention period ended or the candidate
+          withdrew consent). Scores are kept for reporting; the resume, answers and evidence are gone.
+        </div>
+      )}
 
       <section className="bg-white border border-slate-200 rounded-lg p-5 mb-6">
         <h2 className="font-medium text-slate-800 mb-3">Resume fit</h2>
@@ -95,6 +108,8 @@ function SessionDetailContent() {
         <h2 className="font-medium text-slate-800 mb-3">Feedback report</h2>
         {evaluation ? (
           <FeedbackReport evaluation={evaluation} />
+        ) : session.anonymizedAt ? (
+          <p className="text-slate-500 text-sm">Not evaluated before the data was anonymized.</p>
         ) : session.status === 'COMPLETED' ? (
           <div>
             <p className="text-slate-500 text-sm mb-3">Not yet evaluated.</p>
@@ -123,6 +138,39 @@ function SessionDetailContent() {
         </h2>
         <ReviewRequestsPanel sessionId={id} requests={reviewRequests} onChange={() => load(id)} />
       </section>
+
+      {proctoring && (
+        <section className="bg-white border border-slate-200 rounded-lg p-5 mb-6">
+          <h2 className="font-medium text-slate-800 mb-1">Interview conduct</h2>
+          <p className="text-xs text-slate-500 mb-3">
+            Context only — not used by the AI evaluation. A switch can have innocent causes (a
+            notification, a dropped connection, a screen reader).
+          </p>
+          <div className="flex gap-8 text-sm">
+            <div>
+              <p className="text-2xl font-semibold text-slate-900">{proctoring.tabHiddenCount}</p>
+              <p className="text-slate-500">Left the tab</p>
+            </div>
+            <div>
+              <p className="text-2xl font-semibold text-slate-900">{proctoring.fullscreenExitCount}</p>
+              <p className="text-slate-500">Exited fullscreen</p>
+            </div>
+          </div>
+          {proctoring.events.length > 0 && (
+            <details className="mt-3 text-sm">
+              <summary className="cursor-pointer text-slate-600">Show times</summary>
+              <ul className="mt-2 space-y-1 text-slate-500">
+                {proctoring.events.map((e, i) => (
+                  <li key={i}>
+                    {new Date(e.occurredAt).toLocaleTimeString()} —{' '}
+                    {e.eventType === 'tab_hidden' ? 'left the tab' : 'exited fullscreen'}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </section>
+      )}
 
       <section className="bg-white border border-slate-200 rounded-lg p-5">
         <h2 className="font-medium text-slate-800 mb-3">Transcript</h2>

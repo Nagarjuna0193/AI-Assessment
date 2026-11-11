@@ -162,6 +162,11 @@ describe('GET /api/interviews/:id (template + session detail)', () => {
           resolvedAt: new Date('2026-07-03'),
         },
       ],
+      proctoringEvents: [
+        { eventType: 'tab_hidden', occurredAt: new Date('2026-07-02T10:00:00Z') },
+        { eventType: 'tab_hidden', occurredAt: new Date('2026-07-02T10:05:00Z') },
+        { eventType: 'fullscreen_exit', occurredAt: new Date('2026-07-02T10:06:00Z') },
+      ],
     });
 
     const res = await request(app).get('/api/interviews/sess_1').set('Cookie', orgSessionCookie());
@@ -174,6 +179,9 @@ describe('GET /api/interviews/:id (template + session detail)', () => {
       { questionId: 'q1', orderIndex: 0, questionText: 'Q1', responseText: 'A1' },
     ]);
     expect(res.body.evaluation.overallScore).toBe(78);
+    expect(res.body.proctoring).toEqual(
+      expect.objectContaining({ tabHiddenCount: 2, fullscreenExitCount: 1 })
+    );
     expect(res.body.reviewRequests).toEqual([
       expect.objectContaining({ id: 'rr_1', outcome: 'upheld', resolvedBy: 'reviewer@acme.com' }),
     ]);
@@ -385,5 +393,21 @@ describe('POST /api/interviews/:id/review-requests/:requestId/resolve', () => {
         outputRef: 'outcome:upheld',
       }),
     });
+  });
+});
+
+describe('POST /api/interviews/:id/evaluate on an anonymized session', () => {
+  it('returns 409 session_anonymized and does not call Claude', async () => {
+    prisma.candidateSession.findUnique.mockResolvedValue({
+      id: 'sess_1',
+      orgId: 'org_1',
+      status: 'COMPLETED',
+      anonymizedAt: new Date(),
+      template: {},
+    });
+    const res = await request(app).post('/api/interviews/sess_1/evaluate').set('Cookie', orgSessionCookie());
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('session_anonymized');
+    expect(anthropicService.evaluateTranscript).not.toHaveBeenCalled();
   });
 });

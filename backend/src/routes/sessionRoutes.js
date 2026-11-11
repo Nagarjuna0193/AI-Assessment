@@ -8,6 +8,7 @@ const anthropicService = require('../services/anthropicService');
 const voiceService = require('../services/voiceService');
 const resumeParserService = require('../services/resumeParserService');
 const storageService = require('../services/storageService');
+const retentionService = require('../services/retentionService');
 
 const router = express.Router();
 
@@ -66,6 +67,10 @@ router.get('/:token', async (req, res, next) => {
     if (!session) {
       return res.status(404).json({ error: 'session_not_found' });
     }
+    if (session.anonymizedAt) {
+      // Nothing personal is left to show.
+      return res.json({ status: session.status, anonymized: true, roleName: session.template.roleName });
+    }
 
     const [questions, reviewRequests] = await Promise.all([
       prisma.question.findMany({
@@ -94,6 +99,8 @@ router.get('/:token', async (req, res, next) => {
       })),
       // Candidate-safe view only: no internal notes, outcome, or scores.
       reviewRequests: reviewRequests.map(toCandidateReviewView),
+      // Shown in the consent text so it always matches the server setting.
+      retentionDays: config.dataRetentionDays,
     });
   } catch (err) {
     next(err);
@@ -135,6 +142,21 @@ router.post('/:token/start', async (req, res, next) => {
           normalizedMode === 'VOICE'
             ? 'Candidate consent to data processing and voice recording must be recorded before a voice session can start'
             : 'Candidate consent must be recorded before the session can start',
+      });
+    }
+
+    // The linked record must be this candidate's own, live data_processing
+    // consent — not just any id the browser sends.
+    const linkedConsent = await prisma.consentRecord.findUnique({ where: { id: consentRecordId } });
+    if (
+      !linkedConsent ||
+      linkedConsent.candidateId !== candidate.id ||
+      linkedConsent.consentType !== 'data_processing' ||
+      linkedConsent.consentWithdrawnAt
+    ) {
+      return res.status(400).json({
+        error: 'invalid_consent_record',
+        message: "consentRecordId must be this candidate's active data_processing consent",
       });
     }
 
@@ -305,9 +327,15 @@ router.post('/:token/answers', async (req, res, next) => {
     ]);
 
     if (answeredCount >= totalQuestions) {
+      const completedAt = new Date();
       await prisma.candidateSession.update({
         where: { id: session.id },
-        data: { status: 'COMPLETED', completedAt: new Date() },
+        data: {
+          status: 'COMPLETED',
+          completedAt,
+          // DPDP retention clock starts at completion.
+          dataRetentionUntil: retentionService.retentionUntilFrom(completedAt),
+        },
       });
       return res.status(200).json({ done: true, message: 'Interview complete' });
     }
@@ -408,6 +436,9 @@ router.post('/:token/review-requests', async (req, res, next) => {
     if (!session) {
       return res.status(404).json({ error: 'session_not_found' });
     }
+    if (session.anonymizedAt) {
+      return res.status(409).json({ error: 'session_anonymized' });
+    }
     if (session.status !== 'COMPLETED') {
       return res.status(409).json({
         error: 'session_not_complete',
@@ -449,6 +480,78 @@ router.post('/:token/review-requests', async (req, res, next) => {
     });
 
     res.status(201).json({ reviewRequest: toCandidateReviewView(reviewRequest) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const PROCTORING_EVENT_TYPES = ['tab_hidden', 'fullscreen_exit'];
+// Generous cap so a misbehaving client can't flood the table.
+const MAX_PROCTORING_EVENTS_PER_SESSION = 200;
+
+// Phase 7: basic proctoring signal from the interview screen. Context for
+// the human reviewer only — never an input to the AI evaluation. Candidates
+// are told about it in the consent text (v2).
+router.post('/:token/proctoring-events', async (req, res, next) => {
+  try {
+    const { eventType } = req.body;
+    if (!PROCTORING_EVENT_TYPES.includes(eventType)) {
+      return res.status(400).json({
+        error: 'invalid_request',
+        message: `eventType must be one of ${PROCTORING_EVENT_TYPES.join(', ')}`,
+      });
+    }
+
+    const session = await findSessionByToken(req.params.token);
+    if (!session) {
+      return res.status(404).json({ error: 'session_not_found' });
+    }
+    if (session.status !== 'IN_PROGRESS') {
+      return res.status(409).json({ error: 'session_not_in_progress', message: `Session status is ${session.status}` });
+    }
+
+    const count = await prisma.proctoringEvent.count({ where: { sessionId: session.id } });
+    if (count >= MAX_PROCTORING_EVENTS_PER_SESSION) {
+      // Accept silently: the reviewer already sees the cap was hit.
+      return res.status(202).json({ recorded: false });
+    }
+
+    // Server time, not a client-supplied timestamp.
+    await prisma.proctoringEvent.create({
+      data: { sessionId: session.id, eventType, occurredAt: new Date() },
+    });
+
+    res.status(201).json({ recorded: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Phase 7 / DPDP: the candidate withdraws consent and asks for their data to
+// be erased. Anonymizes this session immediately (an in-progress interview
+// is cancelled). See retentionService.anonymizeSession for what is kept.
+router.post('/:token/erasure', async (req, res, next) => {
+  try {
+    if (req.body.confirm !== true) {
+      return res.status(400).json({ error: 'invalid_request', message: 'confirm: true is required' });
+    }
+
+    const session = await findSessionByToken(req.params.token);
+    if (!session) {
+      return res.status(404).json({ error: 'session_not_found' });
+    }
+    if (session.anonymizedAt) {
+      return res.status(409).json({ error: 'already_anonymized' });
+    }
+
+    const candidate = await prisma.candidate.findUnique({ where: { email: session.email } });
+    await retentionService.anonymizeSession(session.id, {
+      actorType: 'candidate',
+      actorId: candidate ? candidate.id : null,
+      reason: 'candidate_erasure_request',
+    });
+
+    res.status(200).json({ anonymized: true });
   } catch (err) {
     next(err);
   }

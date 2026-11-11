@@ -1,6 +1,6 @@
 # TODO / Phase Checklist
 
-Current phase: **Phase 6 — reporting & human review done** (next: Phase 7 compliance hardening)
+Current phase: **Phase 7 — compliance hardening done** (next: Phase 8 pilot deployment)
 
 See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 
@@ -221,12 +221,34 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
       target, queue owner, escalation route (`docs/COMPLIANCE.md`)
 
 ## Phase 7 — Compliance hardening
-- [ ] Full DPDP checklist in `docs/COMPLIANCE.md` reviewed and closed out
-- [ ] Basic tab-switch/fullscreen detection
-- [ ] Data retention/deletion process
+- [x] Full DPDP checklist in `docs/COMPLIANCE.md` reviewed: every item
+      re-checked against code; remaining open items need a person or a
+      business decision (breach owner, breach alerting, human-review SLA)
+- [x] Basic tab-switch/fullscreen detection: `proctoring_events` table,
+      `POST /api/sessions/:token/proctoring-events`,
+      `frontend/lib/useProctoring.js` (on-screen warning, optional
+      fullscreen), "Interview conduct" on the reviewer page; never an AI input
+- [x] Data retention/deletion process: `retentionService` anonymizes
+      (180-day default, `DATA_RETENTION_DAYS`); `npm run retention` +
+      `POST /api/admin/retention/run`; sessions with open review requests held
+- [x] Candidate consent withdrawal + erasure: `POST /api/sessions/:token/erasure`,
+      link on every candidate page after consent; consent text v2
+- [x] Audit log append-only (DB triggers) + per-candidate lookup
+      (`GET /api/admin/audit-log`, ops-only, itself logged)
+- [x] OTP rate limit (5 per 15 min) and lockout after 5 wrong guesses
+      (closes the item parked in Phase 4.5)
+- [x] Consent-record ownership check on session start
+- [x] Architecture diagram redrawn; README run instructions
+- [x] Tests: `backend/tests/retention.test.js` + additions — 108/108 passing
+- [ ] Apply migrations `20261111000000`, `20261111010000`, `20261111020000`
+      to the real DB (`npx prisma migrate deploy`)
+- [ ] Name the breach-response owner + backup (`docs/COMPLIANCE.md`)
+- [ ] Counsel review of `docs/COMPLIANCE.md` (esp. breach timelines)
 
 ## Phase 8 — Pilot deployment
 - [ ] Deploy to Railway/Render
+- [ ] Schedule `npm run retention` daily (host cron)
+- [ ] Turn on hosting/DB login and access alerts (breach detection minimum)
 - [ ] Pilot run (50–100 interviews over ~3 months)
 - [ ] Post-pilot review
 
@@ -239,8 +261,11 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 - ATS integrations (so `interview_templates.job_id` stays a free-text label,
   not a real foreign key, until/unless one exists)
 - EU AI Act-style mandatory bias audit tooling
-- OTP request/verify rate-limiting or lockout (flagged during Phase 4.5 —
-  revisit in Phase 7 compliance hardening)
+- IP-based rate limiting on auth/candidate endpoints (Phase 7 added
+  per-user OTP limits only)
+- `request-otp` returns 404 for unknown emails (account enumeration);
+  change to a uniform response
+- Off-site / write-once export of `audit_log` (beyond the DB triggers)
 - Org/org_user provisioning UI (still ops-only via `/api/admin/*`) —
   narrower than before: template creation and candidate invites now do have
   an admin UI as of Phase 4.6

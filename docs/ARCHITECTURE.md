@@ -5,48 +5,37 @@ no microservices, no premature scaling.
 
 ## System diagram
 
+Current as of Phase 7.
+
 ```
-                                  +-------------------+
-                                  |   Candidate /      |
-                                  |   Recruiter (UI)   |
-                                  |  React (Next.js)   |
-                                  +---------+----------+
-                                            |
-                                            | HTTPS
-                                            v
-                          +-----------------------------------+
-                          |           Backend API              |
-                          |   Node.js + Express /               |
-                          |   Next.js API routes                |
-                          |                                      |
-                          |  +--------------------------------+ |
-                          |  |  Consent capture (pre-interview)| |
-                          |  |  -> recorded before any LLM call| |
-                          |  +--------------------------------+ |
-                          |                                      |
-                          |  +--------------------------------+ |
-                          |  |  Audit logging                  | |
-                          |  |  -> every AI decision + prompt/ | |
-                          |  |     response logged w/ actor,   | |
-                          |  |     timestamp, purpose          | |
-                          |  +--------------------------------+ |
-                          +----------+-----------------+--------+
-                                     |                  |
-                          question gen /                | read/write
-                          evaluation calls               |
-                                     v                  v
-                        +------------------+   +------------------+
-                        |  LLM (Anthropic  |   |    Postgres      |
-                        |  API - Claude)   |   |  (Supabase /     |
-                        |                  |   |   Railway)       |
-                        |  - question gen  |   |  - candidates    |
-                        |    from JD+resume|   |  - interviews    |
-                        |  - transcript    |   |  - transcripts   |
-                        |    evaluation    |   |  - consent log   |
-                        +------------------+   |  - audit log     |
-                                                |  - feedback      |
-                                                |    reports       |
-                                                +------------------+
+   Candidate (invite link)            Org users: ADMIN / REVIEWER        Ops (x-ops-key)
+   consent, resume, answers,          dashboard, report, review          orgs, users, credits,
+   review request, erasure            resolution                         retention run, audit lookup
+            |                                  |                                 |
+            +----------------------------------+---------------------------------+
+                                               | HTTPS (Next.js frontend -> Express API)
+                                               v
+   +---------------------------------------------------------------------------------------+
+   | Backend API (Node.js + Express)                                                       |
+   |  - consent gate: no session start / LLM call without live consent                     |
+   |  - audit_log write on every AI decision and sensitive action                          |
+   |  - retentionService: anonymize on retention expiry or candidate erasure request       |
+   +------------+--------------------+-----------------------+------------------+----------+
+                |                    |                       |                  |
+   JD+resume /  |       voice audio  |          resume file  |      SQL         | OTP email
+   JD+transcript|       (not stored) |          (PDF/DOCX)   |                  |
+                v                    v                       v                  v
+     +----------------+   +--------------------+   +-----------------+   +------------------------+
+     | Anthropic API  |   | OpenAI Whisper/TTS |   | Supabase Storage|   | Postgres               |
+     | (Claude)       |   | (STT / TTS)        |   | (local disk in  |   |  templates, sessions,  |
+     |  questions +   |   +--------------------+   |  dev)           |   |  questions, responses, |
+     |  resume score, |                            +-----------------+   |  evaluations, reviews, |
+     |  evaluation    |                                                  |  proctoring events,    |
+     +----------------+                                                  |  consent, credits,     |
+                                                                         |  audit_log (append-    |
+                                                                         |  only triggers)        |
+                                                                         +------------------------+
+   Resend (OTP emails to org users) is called from the API only for login codes.
 ```
 
 Voice path (Phase 4, re-addressed by invite token in Phase 4.6): candidate
@@ -86,6 +75,7 @@ Schema defined in `backend/prisma/schema.prisma` (Prisma; see
 | `interview_templates` (Phase 4.6) | The JD/role a recruiter is hiring for: `role_name`, `job_id` (free-text label, not an ATS FK), `job_description_text`, `question_mode` (`AI`/`MANUAL`), `manual_questions` (JSON, MANUAL mode only), `created_by_org_user_id`. One template, many candidates. |
 | `candidate_sessions` (Phase 4.6) | One invited candidate's attempt against a template — **replaces `interviews`** as the parent of `questions`/`responses`/`evaluations`. Carries `invite_token` (the candidate's only way to address their own session), `status`, `mode` (text/voice), `resume_file_ref`/`resume_text`, `resume_jd_score`/`resume_jd_rationale`, `consent_record_id`, timing, and `data_retention_until`. |
 | `questions` / `responses` / `evaluations` | Unchanged in purpose from Phase 1/2, just re-keyed to `session_id` (was `interview_id`) — one per `candidate_session` now instead of one per `interviews` row. |
+| `proctoring_events` (Phase 7) | Tab-hidden / fullscreen-exit signals per session: `event_type`, server-stamped `occurred_at`. Reviewer context only, never an AI input. |
 | `human_review_requests` (Phase 6) | DPDP human-review path: a candidate's request (`reason`, optional `evaluation_id` of the latest evaluation at the time) and its resolution (`status` OPEN/RESOLVED, `outcome` upheld/revised, internal `resolution_notes`, `candidate_response`, `resolved_by_org_user_id`, timestamps). Supersedes the unused `evaluations.human_review_requested`/`human_review_notes` columns, which are kept to avoid a destructive migration. |
 
 See `docs/DECISIONS.md` for the full Phase 4.6 migration rationale (why
@@ -183,6 +173,10 @@ org-initiated actions, just restricted to a role within the org. See
 7. The session detail page shows the resume score/rationale and the
    interview evaluation together — one report, not two screens.
 8. Every LLM call in steps 4 and 6 is written to the audit log.
+9. (Phase 6) The candidate can request human review; a reviewer resolves it.
+10. (Phase 7) 180 days after completion (or at any time on the candidate's
+    request) the session's personal data is anonymized; scores and the
+    audit trail remain.
 
 ## AI decision logic (Phase 5, for audit readiness)
 
@@ -238,3 +232,22 @@ reviewer UI shows the latest.
   candidate sees the reply on their invite page. The candidate never sees
   scores, the recommendation, or internal notes. Resolving doesn't edit the
   AI evaluation; a `revised` outcome is the human override on record.
+
+## Compliance hardening (Phase 7)
+
+- **Retention & erasure:** `backend/src/services/retentionService.js`.
+  `anonymizeSession` is the single code path for both the scheduled job
+  (`npm run retention`, `POST /api/admin/retention/run`) and the candidate's
+  erasure request (`POST /api/sessions/:token/erasure`). Details of what is
+  kept vs. removed: `docs/COMPLIANCE.md`.
+- **Proctoring:** `frontend/lib/useProctoring.js` listens for
+  `visibilitychange` (tab hidden) and `fullscreenchange` (exit after having
+  entered fullscreen), warns the candidate on screen, and posts the event
+  type to `POST /api/sessions/:token/proctoring-events` (server timestamps
+  it; capped at 200 per session). The reviewer page shows counts and times
+  under "Interview conduct".
+- **Audit log:** append-only via DB triggers; per-candidate lookup at
+  `GET /api/admin/audit-log`.
+- **Login abuse limits:** max 5 OTP requests per org_user per 15 minutes;
+  a code locks after 5 wrong guesses (`login_otps.attempts`). All
+  configurable via `.env`.

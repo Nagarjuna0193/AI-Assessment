@@ -28,6 +28,18 @@ router.post('/request-otp', async (req, res, next) => {
       return res.status(404).json({ error: 'org_user_not_found' });
     }
 
+    // Phase 7: cap how many codes can be requested per window.
+    const windowStart = new Date(Date.now() - config.otpRequestWindowMinutes * 60 * 1000);
+    const recentRequests = await prisma.loginOtp.count({
+      where: { orgUserId: orgUser.id, createdAt: { gte: windowStart } },
+    });
+    if (recentRequests >= config.otpMaxRequestsPerWindow) {
+      return res.status(429).json({
+        error: 'too_many_requests',
+        message: `Too many login codes requested. Try again in ${config.otpRequestWindowMinutes} minutes.`,
+      });
+    }
+
     const code = authService.generateOtpCode();
     const codeHash = await authService.hashOtpCode(code);
 
@@ -69,8 +81,18 @@ router.post('/verify-otp', async (req, res, next) => {
       return res.status(401).json({ error: 'otp_expired_or_invalid' });
     }
 
+    // Phase 7: lock a code after too many wrong guesses; the user must
+    // request a new one (which is itself rate-limited above).
+    if (otp.attempts >= config.otpMaxVerifyAttempts) {
+      return res.status(429).json({
+        error: 'otp_locked',
+        message: 'Too many incorrect attempts. Request a new code.',
+      });
+    }
+
     const matches = await authService.verifyOtpCode(code, otp.codeHash);
     if (!matches) {
+      await prisma.loginOtp.update({ where: { id: otp.id }, data: { attempts: { increment: 1 } } });
       return res.status(401).json({ error: 'otp_expired_or_invalid' });
     }
 

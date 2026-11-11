@@ -52,6 +52,9 @@ model Candidate {
   resumeUrl          String?   @map("resume_url")
   // DPDP: when this candidate's personal data is due for deletion/anonymization.
   dataRetentionUntil DateTime? @map("data_retention_until")
+  // Phase 7: set when personal fields were replaced (retention expiry or
+  // erasure request). See backend/src/services/retentionService.js.
+  anonymizedAt       DateTime? @map("anonymized_at")
   createdAt          DateTime  @default(now()) @map("created_at")
   updatedAt          DateTime  @updatedAt @map("updated_at")
 
@@ -113,6 +116,9 @@ model CandidateSession {
   completedAt        DateTime?     @map("completed_at")
   // DPDP: when this session's data is due for deletion/anonymization.
   dataRetentionUntil DateTime?     @map("data_retention_until")
+  // Phase 7: set once personal data on this session (and its questions,
+  // responses, evaluations, review requests) has been anonymized.
+  anonymizedAt       DateTime?     @map("anonymized_at")
   createdAt          DateTime      @default(now()) @map("created_at")
   updatedAt          DateTime      @updatedAt @map("updated_at")
 
@@ -124,6 +130,7 @@ model CandidateSession {
   evaluations         Evaluation[]
   creditTransaction   CreditTransaction?
   humanReviewRequests HumanReviewRequest[]
+  proctoringEvents    ProctoringEvent[]
 
   @@index([orgId])
   @@index([templateId])
@@ -170,6 +177,8 @@ model LoginOtp {
   codeHash   String    @map("code_hash")
   expiresAt  DateTime  @map("expires_at")
   consumedAt DateTime? @map("consumed_at")
+  // Phase 7: failed verify attempts against this code (locked at the limit).
+  attempts   Int       @default(0)
   createdAt  DateTime  @default(now()) @map("created_at")
 
   orgUser OrgUser @relation(fields: [orgUserId], references: [id])
@@ -336,4 +345,21 @@ model AuditLog {
 
   @@index([entityType, entityId])
   @@map("audit_log")
+}
+
+// Phase 7: basic proctoring signals — the candidate's tab was hidden or they
+// left fullscreen during the interview. Context for the human reviewer
+// only; never sent to the AI evaluation. No content is captured.
+model ProctoringEvent {
+  id         String   @id @default(uuid())
+  sessionId  String   @map("session_id")
+  // "tab_hidden" | "fullscreen_exit"
+  eventType  String   @map("event_type")
+  occurredAt DateTime @map("occurred_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  session CandidateSession @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+  @@map("proctoring_events")
 }

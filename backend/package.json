@@ -8,6 +8,7 @@
     "start": "node src/server.js",
     "dev": "node src/server.js",
     "test": "jest",
+    "retention": "node src/scripts/runRetention.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy"

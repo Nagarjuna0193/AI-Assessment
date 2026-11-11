@@ -2,7 +2,8 @@ jest.mock('../src/db/prismaClient', () => {
   const prisma = {
     candidateSession: { findUnique: jest.fn(), update: jest.fn() },
     candidate: { findUnique: jest.fn() },
-    consentRecord: { findMany: jest.fn() },
+    consentRecord: { findMany: jest.fn(), findUnique: jest.fn() },
+    proctoringEvent: { count: jest.fn(), create: jest.fn() },
     question: {
       findMany: jest.fn(),
       findUnique: jest.fn(),
@@ -38,12 +39,18 @@ jest.mock('../src/services/storageService', () => ({
   uploadResumeFile: jest.fn(),
 }));
 
+jest.mock('../src/services/retentionService', () => {
+  const actual = jest.requireActual('../src/services/retentionService');
+  return { ...actual, anonymizeSession: jest.fn() };
+});
+
 const request = require('supertest');
 const prisma = require('../src/db/prismaClient');
 const anthropicService = require('../src/services/anthropicService');
 const voiceService = require('../src/services/voiceService');
 const resumeParserService = require('../src/services/resumeParserService');
 const storageService = require('../src/services/storageService');
+const retentionService = require('../src/services/retentionService');
 const app = require('../src/app');
 
 const TOKEN = 'tok_abc123';
@@ -200,6 +207,12 @@ describe('POST /api/sessions/:token/start', () => {
     prisma.consentRecord.findMany.mockResolvedValue([
       { consentType: 'data_processing', consentWithdrawnAt: null },
     ]);
+    prisma.consentRecord.findUnique.mockResolvedValue({
+      id: 'consent_1',
+      candidateId: 'cand_1',
+      consentType: 'data_processing',
+      consentWithdrawnAt: null,
+    });
     prisma.candidateSession.update.mockResolvedValue({});
 
     const res = await request(app).post(`/api/sessions/${TOKEN}/start`).send({ consentRecordId: 'consent_1' });
@@ -210,6 +223,30 @@ describe('POST /api/sessions/:token/start', () => {
         data: expect.objectContaining({ status: 'IN_PROGRESS', consentRecordId: 'consent_1' }),
       })
     );
+  });
+});
+
+describe('POST /api/sessions/:token/start consent-record ownership', () => {
+  it("returns 400 when the consent record belongs to someone else", async () => {
+    prisma.candidateSession.findUnique.mockResolvedValue(baseSession());
+    prisma.candidate.findUnique.mockResolvedValue({ id: 'cand_1' });
+    prisma.consentRecord.findMany.mockResolvedValue([
+      { consentType: 'data_processing', consentWithdrawnAt: null },
+    ]);
+    prisma.consentRecord.findUnique.mockResolvedValue({
+      id: 'consent_other',
+      candidateId: 'cand_2',
+      consentType: 'data_processing',
+      consentWithdrawnAt: null,
+    });
+
+    const res = await request(app)
+      .post(`/api/sessions/${TOKEN}/start`)
+      .send({ consentRecordId: 'consent_other' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_consent_record');
+    expect(prisma.candidateSession.update).not.toHaveBeenCalled();
   });
 });
 
@@ -365,7 +402,9 @@ describe('POST /api/sessions/:token/answers', () => {
     expect(res.status).toBe(200);
     expect(res.body.done).toBe(true);
     expect(prisma.candidateSession.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ status: 'COMPLETED' }) })
+      expect.objectContaining({
+        data: expect.objectContaining({ status: 'COMPLETED', dataRetentionUntil: expect.any(Date) }),
+      })
     );
   });
 
@@ -456,5 +495,103 @@ describe('GET /api/sessions/:token/questions/:questionId/audio', () => {
 
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toBe('audio/mpeg');
+  });
+});
+
+describe('GET /api/sessions/:token for an anonymized session', () => {
+  it('returns only status, roleName and anonymized: true', async () => {
+    prisma.candidateSession.findUnique.mockResolvedValue(
+      baseSession({ status: 'COMPLETED', anonymizedAt: new Date(), candidateName: '[removed]' })
+    );
+    const res = await request(app).get(`/api/sessions/${TOKEN}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: 'COMPLETED', anonymized: true, roleName: 'Backend Engineer' });
+    expect(prisma.question.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/sessions/:token/proctoring-events', () => {
+  const url = `/api/sessions/${TOKEN}/proctoring-events`;
+
+  it('returns 400 for an unknown event type', async () => {
+    const res = await request(app).post(url).send({ eventType: 'screenshot' });
+    expect(res.status).toBe(400);
+    expect(prisma.proctoringEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 when the session is not in progress', async () => {
+    prisma.candidateSession.findUnique.mockResolvedValue(baseSession({ status: 'COMPLETED' }));
+    const res = await request(app).post(url).send({ eventType: 'tab_hidden' });
+    expect(res.status).toBe(409);
+    expect(prisma.proctoringEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('records the event with a server timestamp', async () => {
+    prisma.candidateSession.findUnique.mockResolvedValue(baseSession({ status: 'IN_PROGRESS' }));
+    prisma.proctoringEvent.count.mockResolvedValue(3);
+    prisma.proctoringEvent.create.mockResolvedValue({});
+
+    const res = await request(app).post(url).send({ eventType: 'fullscreen_exit', occurredAt: '1999-01-01' });
+
+    expect(res.status).toBe(201);
+    expect(prisma.proctoringEvent.create).toHaveBeenCalledWith({
+      data: { sessionId: 'sess_1', eventType: 'fullscreen_exit', occurredAt: expect.any(Date) },
+    });
+    const { occurredAt } = prisma.proctoringEvent.create.mock.calls[0][0].data;
+    expect(occurredAt.getFullYear()).toBeGreaterThan(2000);
+  });
+
+  it('stops recording past the per-session cap', async () => {
+    prisma.candidateSession.findUnique.mockResolvedValue(baseSession({ status: 'IN_PROGRESS' }));
+    prisma.proctoringEvent.count.mockResolvedValue(200);
+
+    const res = await request(app).post(url).send({ eventType: 'tab_hidden' });
+
+    expect(res.status).toBe(202);
+    expect(prisma.proctoringEvent.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/sessions/:token/erasure', () => {
+  const url = `/api/sessions/${TOKEN}/erasure`;
+
+  it('requires explicit confirmation', async () => {
+    const res = await request(app).post(url).send({});
+    expect(res.status).toBe(400);
+    expect(retentionService.anonymizeSession).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 when already anonymized', async () => {
+    prisma.candidateSession.findUnique.mockResolvedValue(baseSession({ anonymizedAt: new Date() }));
+    const res = await request(app).post(url).send({ confirm: true });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('already_anonymized');
+  });
+
+  it('anonymizes the session with the candidate as actor', async () => {
+    prisma.candidateSession.findUnique.mockResolvedValue(baseSession({ status: 'IN_PROGRESS' }));
+    prisma.candidate.findUnique.mockResolvedValue({ id: 'cand_1' });
+    retentionService.anonymizeSession.mockResolvedValue({ sessionId: 'sess_1', candidateAnonymized: true });
+
+    const res = await request(app).post(url).send({ confirm: true });
+
+    expect(res.status).toBe(200);
+    expect(retentionService.anonymizeSession).toHaveBeenCalledWith('sess_1', {
+      actorType: 'candidate',
+      actorId: 'cand_1',
+      reason: 'candidate_erasure_request',
+    });
+  });
+});
+
+describe('POST /api/sessions/:token/review-requests on an anonymized session', () => {
+  it('returns 409 session_anonymized', async () => {
+    prisma.candidateSession.findUnique.mockResolvedValue(
+      baseSession({ status: 'COMPLETED', anonymizedAt: new Date() })
+    );
+    const res = await request(app).post(`/api/sessions/${TOKEN}/review-requests`).send({ reason: 'Please check' });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('session_anonymized');
+    expect(prisma.humanReviewRequest.create).not.toHaveBeenCalled();
   });
 });

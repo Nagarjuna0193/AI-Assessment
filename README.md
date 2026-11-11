@@ -49,13 +49,13 @@ See `CLAUDE.md` for full project rules and constraints.
 
 ## Running locally
 
-Placeholder — filled in once backend/frontend scaffolding exists (Phase 1+).
-
 ```
 # Backend
 cd backend
 npm install
+npx prisma migrate deploy   # apply migrations to DATABASE_URL
 npm run dev
+npm test
 
 # Frontend
 cd frontend
@@ -64,6 +64,11 @@ npm run dev
 ```
 
 Copy `.env.example` to `.env` and fill in the required keys before running.
+
+**Data retention job (DPDP):** `cd backend && npm run retention` anonymizes
+candidate data past its retention window (`DATA_RETENTION_DAYS`, default
+180). Add `-- --dry-run` to preview. Run it daily as a cron job in
+production; see `docs/COMPLIANCE.md`.
 
 ## Project docs
 

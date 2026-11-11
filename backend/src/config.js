@@ -31,6 +31,11 @@ module.exports = {
   jwtSecret: process.env.JWT_SECRET || 'dev-only-insecure-secret-change-me',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
   otpTtlMinutes: Number(process.env.OTP_TTL_MINUTES) || 10,
+  // Phase 7: OTP abuse limits — max codes requested per window per org_user,
+  // and max wrong guesses against a single code before it's locked.
+  otpMaxRequestsPerWindow: Number(process.env.OTP_MAX_REQUESTS_PER_WINDOW) || 5,
+  otpRequestWindowMinutes: Number(process.env.OTP_REQUEST_WINDOW_MINUTES) || 15,
+  otpMaxVerifyAttempts: Number(process.env.OTP_MAX_VERIFY_ATTEMPTS) || 5,
   sessionCookieName: 'org_session',
   // Email delivery for OTP codes (Resend REST API — see docs/DECISIONS.md).
   // Falls back to logging the code to the console when unset, so local dev
@@ -49,4 +54,8 @@ module.exports = {
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
   supabaseResumeBucket: process.env.SUPABASE_RESUME_BUCKET || 'resumes',
   localUploadsDir: process.env.LOCAL_UPLOADS_DIR || 'uploads',
+  // Phase 7 / DPDP: days after an interview completes (or, if it never
+  // completes, after the invite was created) before the candidate's personal
+  // data is anonymized by the retention job. See docs/COMPLIANCE.md.
+  dataRetentionDays: Number(process.env.DATA_RETENTION_DAYS) || 180,
 };

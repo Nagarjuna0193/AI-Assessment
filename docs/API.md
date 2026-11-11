@@ -183,7 +183,11 @@ progress on a page refresh.
 ```
 
 `reviewRequests` (Phase 6) is the candidate-safe view: no scores, outcome,
-or internal reviewer notes.
+or internal reviewer notes. `retentionDays` (Phase 7) is the server's
+`DATA_RETENTION_DAYS`, shown in the consent text.
+
+**Anonymized session (Phase 7):** returns only
+`{ "status": "COMPLETED", "anonymized": true, "roleName": "..." }`.
 
 **Errors**
 - `404 session_not_found` — invalid or expired invite link.
@@ -298,9 +302,44 @@ evaluation if one exists; works before evaluation too.
 - `404 session_not_found`
 - `409 session_not_complete` — the interview isn't finished.
 - `409 review_already_open` — a request for this session is still open.
+- `409 session_anonymized` (Phase 7)
 
 Writes an `audit_log` entry (`action: human_review_requested`, `actor_type:
 candidate`).
+
+### `POST /api/sessions/:token/proctoring-events` (Phase 7)
+
+Records that the candidate's tab was hidden or they left fullscreen during
+the interview. The server sets the timestamp; any client-sent time is
+ignored. Reviewer context only, never an AI evaluation input.
+
+**Request body**: `{ "eventType": "tab_hidden" }` (`tab_hidden` | `fullscreen_exit`)
+
+**Response**: `201 { "recorded": true }`, or `202 { "recorded": false }`
+once the session has 200 events (cap).
+
+**Errors**
+- `400 invalid_request` — unknown `eventType`.
+- `404 session_not_found`
+- `409 session_not_in_progress`
+
+### `POST /api/sessions/:token/erasure` (Phase 7)
+
+The candidate withdraws consent and asks for their data to be erased.
+Anonymizes the session immediately (see `docs/COMPLIANCE.md` for exactly
+what is removed and kept); an in-progress interview becomes `CANCELLED`.
+Cannot be undone.
+
+**Request body**: `{ "confirm": true }` (required)
+
+**Response `200`**: `{ "anonymized": true }`
+
+**Errors**
+- `400 invalid_request` — `confirm: true` missing.
+- `404 session_not_found`
+- `409 already_anonymized`
+
+Writes `audit_log` `data_anonymized` (actor `candidate`).
 
 ### `GET /api/sessions/:token/questions/:questionId/audio`
 
@@ -350,7 +389,8 @@ dashboard's "expandable to candidate sessions" list needs one request.
           "createdAt": "...",
           "evaluationScore": 78,
           "recommendation": "advance",   // latest evaluation's, or null (Phase 6)
-          "openReviewRequests": 1        // count of OPEN human-review requests (Phase 6)
+          "openReviewRequests": 1,       // count of OPEN human-review requests (Phase 6)
+          "anonymized": false            // Phase 7
         }
       ]
     }
@@ -380,7 +420,13 @@ its existence isn't leaked across orgs.
     "id": "...", "candidateName": "Jane Doe", "email": "...",
     "status": "COMPLETED", "mode": "TEXT",
     "resumeJdScore": 82, "resumeJdRationale": "...",
-    "createdAt": "...", "completedAt": "..."
+    "createdAt": "...", "completedAt": "...",
+    "dataRetentionUntil": "...",   // Phase 7
+    "anonymizedAt": null            // Phase 7; set once personal data is removed
+  },
+  "proctoring": {                   // Phase 7, reviewer context only
+    "tabHiddenCount": 2, "fullscreenExitCount": 1,
+    "events": [ { "eventType": "tab_hidden", "occurredAt": "..." } ]
   },
   "transcript": [
     { "questionId": "...", "orderIndex": 0, "questionText": "...", "responseText": "..." }
@@ -439,6 +485,7 @@ call adds a new row; `GET /api/interviews/:id` returns the latest.
 - `401 auth_required`
 - `404 session_not_found`
 - `409 session_not_complete` — not all questions have been answered yet.
+- `409 session_anonymized` (Phase 7) — the transcript has been removed.
 - `502 evaluation_declined` / `502 evaluation_failed`
 
 Writes an `audit_log` entry (`action: evaluation_generated`, `actor_type:
@@ -495,6 +542,7 @@ choice.
 
 In dev/test (no `AUTH_EMAIL_PROVIDER_API_KEY` configured), the OTP is logged
 to the console instead of emailed — see `docs/DECISIONS.md`.
+- `429 too_many_requests` (Phase 7) — more than `OTP_MAX_REQUESTS_PER_WINDOW` (5) codes in `OTP_REQUEST_WINDOW_MINUTES` (15).
 
 ### `POST /api/auth/verify-otp`
 
@@ -507,6 +555,7 @@ to the console instead of emailed — see `docs/DECISIONS.md`.
 - `400 invalid_request` — missing `email` or `code`.
 - `404 org_user_not_found`
 - `401 otp_expired_or_invalid` — no matching unconsumed OTP, it's expired, or the code is wrong.
+- `429 otp_locked` (Phase 7) — `OTP_MAX_VERIFY_ATTEMPTS` (5) wrong guesses on this code; request a new one.
 
 ### `POST /api/auth/logout`
 
@@ -572,6 +621,31 @@ ledger in this phase (no payment gateway/checkout; parked for later, see
 **Errors**
 - `400 invalid_request` — `amount` not a positive integer, or missing `addedBy`.
 - `404 organization_not_found`
+
+### `POST /api/admin/retention/run` (Phase 7)
+
+Runs the data-retention job now (same code as `npm run retention`).
+
+**Request body**: `{ "dryRun": true }` (optional; lists without changing anything)
+
+**Response `200`**
+```json
+{ "anonymized": ["sess_..."], "held": ["sess_..."], "failed": [ { "sessionId": "...", "error": "..." } ], "dryRun": false }
+```
+`held` = expired but has an open human-review request.
+
+### `GET /api/admin/audit-log` (Phase 7)
+
+Every audit entry about one candidate: their sessions, evaluations, review
+requests, consents, and actions they took. Query by `?email=` (before
+anonymization), `?candidateId=`, or `?sessionId=`. The lookup itself is
+logged (`audit_log_queried`, actor `ops`).
+
+**Response `200`**: `{ "candidateId": "...", "sessionIds": ["..."], "entries": [ ...audit_log rows, oldest first ] }`
+
+**Errors**
+- `400 invalid_request` — no lookup key.
+- `404 candidate_not_found`
 
 ---
 

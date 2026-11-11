@@ -2,9 +2,16 @@ import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '../../components/Layout';
 import VoiceControls from '../../components/VoiceControls';
+import DataErasure from '../../components/DataErasure';
 import { api, ApiError } from '../../lib/api';
+import useProctoring from '../../lib/useProctoring';
 
-const CONSENT_TEXT_VERSION = 'v1';
+// v2 (Phase 7): adds tab/fullscreen monitoring, the retention period, and
+// in-page withdrawal/erasure.
+const CONSENT_TEXT_VERSION = 'v2';
+// The server sends its configured value (DATA_RETENTION_DAYS); this is only
+// a fallback.
+const DEFAULT_RETENTION_DAYS = 180;
 
 // The entire candidate flow (consent -> mandatory resume upload -> AI/manual
 // interview -> completion) lives on this one token-addressed page — the
@@ -63,6 +70,19 @@ export default function InvitePage() {
     );
   }
 
+  if (session.anonymized) {
+    return (
+      <Layout>
+        <div className="bg-white border border-slate-200 rounded-lg p-8 text-center">
+          <h1 className="text-xl font-semibold text-slate-800 mb-2">Your data has been deleted</h1>
+          <p className="text-slate-500">
+            The personal data from your application for {session.roleName} has been removed, either at
+            your request or because our retention period ended. There is nothing further to do.
+          </p>
+        </div>
+      </Layout>
+    );
+  }
   if (session.status === 'INVITED') {
     return <ConsentStep token={token} session={session} onStarted={() => load(token)} />;
   }
@@ -71,6 +91,13 @@ export default function InvitePage() {
   }
   if (session.status === 'IN_PROGRESS') {
     return <InterviewStep token={token} session={session} onComplete={() => load(token)} />;
+  }
+  if (session.status === 'CANCELLED') {
+    return (
+      <Layout>
+        <p className="text-slate-500">This interview has been cancelled.</p>
+      </Layout>
+    );
   }
   return <CompleteStep token={token} session={session} onChange={() => load(token)} />;
 }
@@ -189,6 +216,7 @@ function CompleteStep({ token, session, onChange }) {
           </form>
         )}
       </div>
+      <DataErasure token={token} inProgress={false} onErased={onChange} />
     </Layout>
   );
 }
@@ -273,12 +301,18 @@ function ConsentStep({ token, session, onStarted }) {
               Your resume will be sent to our AI provider along with the job description to
               generate interview questions and a resume-fit score. Your answers will be recorded
               and sent to our AI provider to produce a structured evaluation for the hiring team.
-              This data is used only for this recruitment process and is retained per our data
-              retention policy.
+              This data is used only for this recruitment process. It is kept for{' '}
+              {session.retentionDays || DEFAULT_RETENTION_DAYS} days
+              after your interview is completed and then anonymized.
             </p>
             <p>
-              You may withdraw consent at any time by contacting us, which will stop any further
-              processing of your data for this interview. You may also request human review of an
+              During the interview we note when you switch away from the interview tab or leave
+              fullscreen (only that it happened and when, nothing on your screen). The hiring team
+              sees this as context; it is not used by the AI evaluation.
+            </p>
+            <p>
+              You may withdraw consent and have your data deleted at any time using the link at the
+              bottom of each page after this one. You may also request human review of an
               AI-generated evaluation.
             </p>
           </div>
@@ -382,6 +416,7 @@ function ResumeUploadStep({ token, onUploaded }) {
           {submitting ? 'Preparing your interview…' : 'Upload & continue'}
         </button>
       </form>
+      <DataErasure token={token} inProgress onErased={onUploaded} />
     </Layout>
   );
 }
@@ -390,6 +425,7 @@ function InterviewStep({ token, session, onComplete }) {
   const [answer, setAnswer] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const proctoring = useProctoring(token);
 
   const transcript = session.transcript || [];
   const unanswered = transcript.find((t) => !t.responseText);
@@ -444,6 +480,26 @@ function InterviewStep({ token, session, onComplete }) {
         />
       </div>
 
+      {proctoring.lastWarning && (
+        <div className="mb-4 flex items-start justify-between gap-3 bg-amber-50 border border-amber-200 rounded-md px-4 py-3 text-sm text-amber-900">
+          <span>{proctoring.lastWarning}</span>
+          <button onClick={proctoring.dismissWarning} className="text-amber-700 hover:text-amber-900 shrink-0">
+            Dismiss
+          </button>
+        </div>
+      )}
+      {proctoring.fullscreenSupported && !proctoring.isFullscreen && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
+          <span>Please stay on this tab. Fullscreen is recommended.</span>
+          <button
+            onClick={proctoring.enterFullscreen}
+            className="border border-slate-300 rounded-md px-3 py-1.5 text-slate-800 hover:bg-slate-50"
+          >
+            Enter fullscreen
+          </button>
+        </div>
+      )}
+
       <div className="bg-white border border-slate-200 rounded-lg p-6">
         <h1 className="text-lg font-medium text-slate-800 mb-4">{unanswered.questionText}</h1>
         {session.mode === 'VOICE' && (
@@ -472,6 +528,7 @@ function InterviewStep({ token, session, onComplete }) {
           </button>
         </form>
       </div>
+      <DataErasure token={token} inProgress onErased={onComplete} />
     </Layout>
   );
 }

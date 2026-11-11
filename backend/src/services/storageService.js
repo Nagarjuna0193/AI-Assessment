@@ -40,4 +40,34 @@ async function uploadResumeFile(sessionId, buffer, filename) {
   return `local://${filePath}`;
 }
 
-module.exports = { uploadResumeFile };
+// Phase 7 / DPDP: removes the original resume file on anonymization. A file
+// that is already gone counts as deleted. Accepts the ref format returned by
+// uploadResumeFile (supabase://bucket/key or local://path).
+async function deleteResumeFile(resumeFileRef) {
+  if (!resumeFileRef) return;
+
+  if (resumeFileRef.startsWith('supabase://')) {
+    const rest = resumeFileRef.slice('supabase://'.length);
+    const slash = rest.indexOf('/');
+    const bucket = rest.slice(0, slash);
+    const key = rest.slice(slash + 1);
+    const { error } = await getClient().storage.from(bucket).remove([key]);
+    if (error) {
+      throw new Error(`Failed to delete resume from Supabase Storage: ${error.message}`);
+    }
+    return;
+  }
+
+  if (resumeFileRef.startsWith('local://')) {
+    try {
+      await fs.unlink(resumeFileRef.slice('local://'.length));
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+    }
+    return;
+  }
+
+  throw new Error(`Unrecognized resume file ref: ${resumeFileRef}`);
+}
+
+module.exports = { uploadResumeFile, deleteResumeFile };

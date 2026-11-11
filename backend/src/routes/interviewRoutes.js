@@ -66,6 +66,7 @@ router.get('/', requireOrgAuth, async (req, res, next) => {
             evaluationScore: s.evaluations[0] ? s.evaluations[0].overallScore : null,
             recommendation: s.evaluations[0] ? s.evaluations[0].recommendation : null,
             openReviewRequests: s.humanReviewRequests.length,
+            anonymized: Boolean(s.anonymizedAt),
           })),
         };
       }),
@@ -91,6 +92,7 @@ router.get('/:id', requireOrgAuth, async (req, res, next) => {
           orderBy: { requestedAt: 'desc' },
           include: { resolvedByUser: { select: { email: true } } },
         },
+        proctoringEvents: { orderBy: { occurredAt: 'asc' }, select: { eventType: true, occurredAt: true } },
       },
     });
 
@@ -116,6 +118,14 @@ router.get('/:id', requireOrgAuth, async (req, res, next) => {
         resumeJdRationale: session.resumeJdRationale,
         createdAt: session.createdAt,
         completedAt: session.completedAt,
+        dataRetentionUntil: session.dataRetentionUntil,
+        anonymizedAt: session.anonymizedAt,
+      },
+      // Phase 7: context for the reviewer only, never an AI evaluation input.
+      proctoring: {
+        tabHiddenCount: session.proctoringEvents.filter((e) => e.eventType === 'tab_hidden').length,
+        fullscreenExitCount: session.proctoringEvents.filter((e) => e.eventType === 'fullscreen_exit').length,
+        events: session.proctoringEvents,
       },
       transcript: session.questions.map((q) => ({
         questionId: q.id,
@@ -214,6 +224,12 @@ router.post('/:id/evaluate', requireOrgAuth, async (req, res, next) => {
     const session = await prisma.candidateSession.findUnique({ where: { id }, include: { template: true } });
     if (!session || session.orgId !== req.orgUser.orgId) {
       return res.status(404).json({ error: 'session_not_found' });
+    }
+    if (session.anonymizedAt) {
+      return res.status(409).json({
+        error: 'session_anonymized',
+        message: "This candidate's data has been anonymized; the transcript is no longer available",
+      });
     }
     if (session.status !== 'COMPLETED') {
       return res.status(409).json({

@@ -1,6 +1,6 @@
 jest.mock('../src/db/prismaClient', () => ({
   orgUser: { findUnique: jest.fn() },
-  loginOtp: { create: jest.fn(), findFirst: jest.fn(), update: jest.fn() },
+  loginOtp: { create: jest.fn(), findFirst: jest.fn(), update: jest.fn(), count: jest.fn() },
   organization: { findUnique: jest.fn() },
 }));
 
@@ -16,6 +16,7 @@ const app = require('../src/app');
 
 beforeEach(() => {
   jest.clearAllMocks();
+  prisma.loginOtp.count.mockResolvedValue(0);
 });
 
 describe('POST /api/auth/request-otp', () => {
@@ -45,6 +46,20 @@ describe('POST /api/auth/request-otp', () => {
       expect.objectContaining({ data: expect.objectContaining({ orgUserId: 'orguser_1' }) })
     );
     expect(emailService.sendOtpEmail).toHaveBeenCalledWith('reviewer@acme.com', expect.any(String));
+  });
+});
+
+describe('POST /api/auth/request-otp rate limit', () => {
+  it('returns 429 after too many codes in the window and sends nothing', async () => {
+    prisma.orgUser.findUnique.mockResolvedValue({ id: 'orguser_1', email: 'reviewer@acme.com' });
+    prisma.loginOtp.count.mockResolvedValue(5);
+
+    const res = await request(app).post('/api/auth/request-otp').send({ email: 'reviewer@acme.com' });
+
+    expect(res.status).toBe(429);
+    expect(res.body.error).toBe('too_many_requests');
+    expect(prisma.loginOtp.create).not.toHaveBeenCalled();
+    expect(emailService.sendOtpEmail).not.toHaveBeenCalled();
   });
 });
 
@@ -89,7 +104,29 @@ describe('POST /api/auth/verify-otp', () => {
       .send({ email: 'reviewer@acme.com', code: '000000' });
 
     expect(res.status).toBe(401);
-    expect(prisma.loginOtp.update).not.toHaveBeenCalled();
+    // Wrong guess is counted, the code is not consumed.
+    expect(prisma.loginOtp.update).toHaveBeenCalledWith({
+      where: { id: 'otp_1' },
+      data: { attempts: { increment: 1 } },
+    });
+  });
+
+  it('returns 429 otp_locked once the attempt limit is reached, even for the right code', async () => {
+    prisma.orgUser.findUnique.mockResolvedValue({ id: 'orguser_1', email: 'reviewer@acme.com' });
+    prisma.loginOtp.findFirst.mockResolvedValue({
+      id: 'otp_1',
+      codeHash: await authService.hashOtpCode('123456'),
+      expiresAt: new Date(Date.now() + 60000),
+      attempts: 5,
+    });
+
+    const res = await request(app)
+      .post('/api/auth/verify-otp')
+      .send({ email: 'reviewer@acme.com', code: '123456' });
+
+    expect(res.status).toBe(429);
+    expect(res.body.error).toBe('otp_locked');
+    expect(res.headers['set-cookie']).toBeUndefined();
   });
 
   it('sets a session cookie and consumes the OTP on a correct code', async () => {
