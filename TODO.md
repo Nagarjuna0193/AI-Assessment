@@ -1,6 +1,6 @@
 # TODO / Phase Checklist
 
-Current phase: **Phase 7.6 — conversational interview done** (next: Phase 8 pilot deployment)
+Current phase: **Phase 8 — human-feeling voice interview** (planned 2026-11-21; Phases 8–12 then Phase 13 pilot deployment)
 
 See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 
@@ -330,11 +330,105 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
       environment) — prompt quality and per-turn latency need a check with a
       real key before the pilot (Phase 8)
 
-## Phase 8 — Pilot deployment
+## Phase 8 — Human-feeling voice interview (est. 3–4 days)
+> Requested 2026-11-21. Greeting → intro → adaptive questions → spoken
+> closing; voice interviews are hands-free. Decisions in `docs/DECISIONS.md`.
+- [ ] Migration: `candidate_sessions.closing_message` (cleared on anonymization)
+- [ ] Config: `INTERVIEWER_NAME` (default "Aria"), `TTS_INSTRUCTIONS`
+- [ ] Greeting row (`kind=greeting`): server template, never scored, not
+      counted in the 5–10 limit, not passed to the turn AI
+- [ ] Intro row: AI acknowledgement of the greeting reply
+      (`greeting_ack.v1`) + interviewer self-intro from `interview_plan.v2`
+      (named AI interviewer, org, role, format, "a person decides") +
+      "tell me about yourself"
+- [ ] MANUAL templates: greeting + templated intro lead-in on the first
+      fixed question (no extra question, no AI call)
+- [ ] `interview_turn.v2`: spoken style; after a no-response always move to
+      a new topic (server-enforced + audited)
+- [ ] `noResponse: true` answers (VOICE only) stored as a visible marker
+- [ ] Closing message stored + `GET /api/sessions/:token/closing/audio`
+- [ ] Greetings excluded from the evaluation transcript
+- [ ] TTS tone `instructions` for `gpt-4o-mini-tts` (documented in `.env.example`)
+- [ ] `VoiceConversation` component: Start → speaking (auto-play, captions,
+      replay) → listening (auto mic, level meter, "Done answering",
+      "Type instead") → 30 s silence auto-send with a warning at 10 s and
+      "I need more time" (WCAG 2.2.1) → next question auto-plays → spoken
+      closing
+- [ ] Mock mode speaks with the browser's built-in speech synthesis
+- [ ] Consent v4 (auto-mic, 30 s auto-send, no review step, follow-ups may
+      repeat parts of answers aloud)
+- [ ] Reviewer: "Greeting (not scored)" badge, closing message
+- [ ] Tests, lint/build, mock e2e, manual voice check, docs, commit
+
+## Phase 9 — Assessments foundation: builder, MCQ/MSQ, sharing, timer, credits (est. 5–7 days)
+> New module, separate from interviews (optional `template_id` link only).
+- [ ] Migration `assessment_module`: `assessments`, `assessment_questions`,
+      `assessment_invites`, `assessment_attempts`, `assessment_answers`,
+      `assessment_reports`, `assessment_entry_otps`
+- [ ] Admin API + UI: create/edit assessments, MCQ/MSQ editors (skill,
+      difficulty, points), publish/close
+- [ ] Sharing — email link: invite list (paste/CSV), invite emails,
+      read-only access code from the URL + email on the list + email OTP
+- [ ] Sharing — open link: name + email entry, one attempt per email
+- [ ] Candidate flow: entry → consent → test (navigator, countdown,
+      autosave) → submit → done
+- [ ] Server-enforced deadline (saves rejected after it, auto-submit)
+- [ ] 1 credit per attempt started; 0 credits blocks new attempts
+- [ ] Scoring: MCQ full/none, MSQ all-or-nothing, per-skill % → level
+      (Beginner <40, Intermediate 40–69, Advanced 70–89, Expert ≥90)
+- [ ] Answer keys never sent to candidates
+- [ ] Compliance: assessment consent, audit events, retention + erasure
+      for attempts, human review (`human_review_requests.attempt_id`)
+- [ ] Tests, mock e2e (both sharing modes), docs, commit
+
+## Phase 10 — Assessment proctoring (est. 4–5 days)
+- [ ] Copy / cut / paste / drag-drop / right-click blocked page-wide; logged
+- [ ] Tab switch, window blur, fullscreen exit: warning with count;
+      auto-submit at `max_violations` (default 3)
+- [ ] Webcam snapshot every 30 s, stored via `storageService`
+- [ ] In-browser face detection (MediaPipe, self-hosted model): no-face /
+      multiple-faces flags; server flags snapshot gaps > 90 s
+- [ ] System check before start: camera, exactly one face, fullscreen
+- [ ] Reviewer: proctoring timeline + snapshot gallery with flags
+- [ ] Compliance: `webcam_proctoring` consent; snapshots deleted by
+      retention/erasure; face counting only (no recognition); flags are
+      reviewer context only, never an auto-fail or AI input
+- [ ] Tests, manual webcam check, docs, commit
+
+## Phase 11 — Coding questions: self-hosted Judge0 + in-browser IDE (est. 4–6 days)
+- [ ] `infra/judge0` docker-compose (network disabled, CPU/memory limits,
+      auth token); local run on Docker Desktop (WSL2 cgroup note)
+- [ ] `codeRunnerService` (Python, JavaScript, Java, C, C++); code never
+      runs in the backend process; `not_executed` when no runner configured
+- [ ] Coding question editor: test cases (sample/hidden, weights), starter
+      code per language, limits
+- [ ] CodeMirror 6 IDE: language picker, Run on sample tests (≤ 30 runs per
+      question), per-test results, paste blocked
+- [ ] Final judging on submit against all tests; weighted coding score
+- [ ] Reviewer view of code + test results
+- [ ] Tests (mocked runner), 4-language check against local Judge0, docs, commit
+
+## Phase 12 — AI question drafts + AI assessment report (est. 4–5 days)
+- [ ] `assessment_question_draft.v1`: MCQ/MSQ/coding drafts (with tests +
+      reference solution); publish blocked until every draft is approved
+- [ ] Validate coding drafts by running the reference solution in Judge0
+- [ ] `assessment_report.v1`: per-skill strengths and areas to improve with
+      evidence + summary; scores stay deterministic; no proctoring input
+- [ ] Report page: score, skill levels, strengths/improvements, answers,
+      code, proctoring panel, human review
+- [ ] Audit: `assessment_question_drafted`, `assessment_report_generated`
+- [ ] Tests (mocked Claude), mock e2e, screenshots, docs, commit
+
+## Phase 13 — Pilot deployment (was Phase 8)
 - [ ] Deploy to Railway/Render
-- [ ] Schedule `npm run retention` daily (host cron)
+- [ ] Judge0 on a separate Linux VM (Indian region, auth token, not publicly
+      reachable); set `JUDGE0_URL`
+- [ ] Real-API check of interview prompts, TTS voice quality and per-turn
+      latency (only mock mode tested so far)
+- [ ] Schedule `npm run retention` daily (host cron) — also covers
+      assessment attempts and webcam snapshots
 - [ ] Turn on hosting/DB login and access alerts (breach detection minimum)
-- [ ] Pilot run (50–100 interviews over ~3 months)
+- [ ] Pilot run (50–100 interviews over ~3 months, plus assessments)
 - [ ] Post-pilot review
 
 ## Parked for later
@@ -342,7 +436,8 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 - Self-serve payment/checkout flow for credits (billing UI, card processing,
   invoicing) — Phase 4.5 built the internal credit ledger + ops-only manual
   grant endpoint only; org admins still cannot grant themselves credits
-- Full proctoring (beyond tab-switch/fullscreen)
+- Full proctoring for interviews (beyond tab-switch/fullscreen) — webcam
+  proctoring is in scope for the Assessments module only (Phase 10)
 - ATS integrations (so `interview_templates.job_id` stays a free-text label,
   not a real foreign key, until/unless one exists)
 - EU AI Act-style mandatory bias audit tooling
@@ -370,6 +465,11 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 - Conversational mode for MANUAL templates (e.g. AI follow-ups on fixed
   questions) — MANUAL promises every candidate the same questions, so not
   done without a product decision
+- Using an assessment inside the interview flow (only an optional
+  `assessments.template_id` link exists)
+- Streaming TTS for the voice interview
+- Tuning the voice silence threshold / 30 s limit from pilot feedback
+- "Tell me about yourself" question for MANUAL templates
 - Per-template limits for the conversational interview (min/max questions
   are global constants in `conversationService.LIMITS`)
 - Per-client branding (logo/colour) — the `brand` Tailwind token is the

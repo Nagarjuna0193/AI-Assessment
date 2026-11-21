@@ -6,7 +6,9 @@ feature (Creya AI) of the InterviewDesk platform, not the full platform.
 Scope: LLM-driven question generation from JD + resume, text/voice candidate
 interview, LLM-based transcript evaluation, structured feedback report.
 Explicitly OUT of scope for v1: AI avatar, multi-tenant billing, proctoring
-beyond basic tab-switch/fullscreen detection, ATS integrations.
+beyond basic tab-switch/fullscreen detection (except webcam snapshot
+proctoring for the Assessments module — see `docs/COMPLIANCE.md`), ATS
+integrations.
 
 ## Target market & constraints
 - India only for now. DPDP Act 2023 applies: explicit consent, data minimization,
