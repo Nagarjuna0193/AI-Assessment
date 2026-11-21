@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, ApiError } from '../lib/api';
+import { Button, FormError } from './ui';
 
 // Phase 7 / DPDP: candidate withdraws consent and asks for their data to be
 // erased. Shown on every step after consent. Two-step confirm because it
@@ -8,6 +9,16 @@ export default function DataErasure({ token, inProgress, onErased }) {
   const [confirming, setConfirming] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const headingRef = useRef(null);
+  const triggerRef = useRef(null);
+  const wasConfirming = useRef(false);
+
+  // Focus follows the panel: into it on open, back to the link on cancel.
+  useEffect(() => {
+    if (confirming && headingRef.current) headingRef.current.focus();
+    if (!confirming && wasConfirming.current && triggerRef.current) triggerRef.current.focus();
+    wasConfirming.current = confirming;
+  }, [confirming]);
 
   const handleErase = async () => {
     setSubmitting(true);
@@ -22,35 +33,42 @@ export default function DataErasure({ token, inProgress, onErased }) {
   };
 
   return (
-    <div className="mt-8 border-t border-slate-200 pt-4 text-sm">
+    <aside aria-label="Your data" className="mt-10 border-t border-slate-200 pt-5 text-sm">
       {!confirming ? (
-        <button onClick={() => setConfirming(true)} className="text-slate-500 underline hover:text-slate-800">
-          Withdraw consent and delete my data
-        </button>
+        <p className="text-slate-600">
+          Changed your mind?{' '}
+          <button
+            ref={triggerRef}
+            type="button"
+            onClick={() => setConfirming(true)}
+            className="font-medium text-slate-700 underline underline-offset-2 hover:text-slate-900"
+          >
+            Withdraw consent and delete my data
+          </button>
+        </p>
       ) : (
-        <div className="bg-white border border-rose-200 rounded-lg p-4 space-y-3">
+        <div className="space-y-3 rounded-lg border border-rose-200 bg-white p-5">
+          <h2 ref={headingRef} tabIndex={-1} className="font-semibold text-slate-900 focus:outline-none">
+            Delete your data?
+          </h2>
           <p className="text-slate-700">
-            This withdraws your consent and permanently removes your name, contact details, resume,
-            and interview answers from this application.
-            {inProgress && ' Your interview will be cancelled and cannot be resumed.'} The hiring team
-            will no longer be able to review your interview. We keep a record that you consented and
+            This withdraws your consent and permanently removes your name, contact details, resume, and interview
+            answers from this application.
+            {inProgress && <strong className="font-medium"> Your interview will be cancelled and cannot be resumed.</strong>}{' '}
+            The hiring team will no longer be able to review your interview. We keep a record that you consented and
             later withdrew, without your personal details, so we can show your request was handled.
           </p>
-          {error && <p className="text-red-600">{error}</p>}
-          <div className="flex gap-3">
-            <button
-              onClick={handleErase}
-              disabled={submitting}
-              className="bg-rose-700 text-white rounded-md px-4 py-2 font-medium disabled:opacity-40 hover:bg-rose-800"
-            >
-              {submitting ? 'Deleting…' : 'Yes, delete my data'}
-            </button>
-            <button onClick={() => setConfirming(false)} disabled={submitting} className="text-slate-500 hover:text-slate-800">
+          <FormError>{error}</FormError>
+          <div className="flex flex-wrap gap-3">
+            <Button variant="danger" onClick={handleErase} loading={submitting} loadingText="Deleting…">
+              Yes, delete my data
+            </Button>
+            <Button variant="ghost" onClick={() => setConfirming(false)} disabled={submitting}>
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       )}
-    </div>
+    </aside>
   );
 }

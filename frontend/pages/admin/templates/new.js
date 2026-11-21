@@ -1,8 +1,24 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '../../../components/Layout';
 import RequireAuth from '../../../components/RequireAuth';
+import {
+  Alert,
+  Button,
+  ButtonLink,
+  Card,
+  ChoiceCards,
+  Field,
+  FormError,
+  Icon,
+  PageHeader,
+  SegmentedControl,
+} from '../../../components/ui';
 import { api, ApiError } from '../../../lib/api';
+import { formatFileSize } from '../../../lib/format';
+import { validateDocumentFile } from '../../../lib/files';
+
+const BACK = { href: '/dashboard', label: 'All interviews' };
 
 export default function CreateTemplatePage() {
   return <RequireAuth>{(auth) => <CreateTemplateContent auth={auth} />}</RequireAuth>;
@@ -16,27 +32,48 @@ function CreateTemplateContent({ auth }) {
   const [jdMode, setJdMode] = useState('text'); // 'text' | 'file'
   const [jobDescriptionText, setJobDescriptionText] = useState('');
   const [jdFile, setJdFile] = useState(null);
+  const [jdFileError, setJdFileError] = useState(null);
   const [questionMode, setQuestionMode] = useState('AI');
   const [manualQuestions, setManualQuestions] = useState(['']);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const lastQuestionRef = useRef(null);
+  const focusNewQuestion = useRef(false);
+
+  // After "Add question", put the cursor in the new field.
+  useEffect(() => {
+    if (focusNewQuestion.current && lastQuestionRef.current) {
+      lastQuestionRef.current.focus();
+      focusNewQuestion.current = false;
+    }
+  }, [manualQuestions.length]);
 
   const updateManualQuestion = (index, value) => {
     setManualQuestions((qs) => qs.map((q, i) => (i === index ? value : q)));
   };
-  const addManualQuestion = () => setManualQuestions((qs) => [...qs, '']);
-  const removeManualQuestion = (index) =>
-    setManualQuestions((qs) => qs.filter((_, i) => i !== index));
+  const addManualQuestion = () => {
+    focusNewQuestion.current = true;
+    setManualQuestions((qs) => [...qs, '']);
+  };
+  const removeManualQuestion = (index) => setManualQuestions((qs) => qs.filter((_, i) => i !== index));
 
-  const canSubmit =
-    roleName.trim() &&
-    (jdMode === 'text' ? jobDescriptionText.trim() : jdFile) &&
-    (questionMode === 'AI' || manualQuestions.some((q) => q.trim())) &&
-    !submitting;
+  const handleJdFile = (e) => {
+    const chosen = e.target.files[0] || null;
+    const problem = validateDocumentFile(chosen);
+    setJdFileError(problem);
+    setJdFile(problem ? null : chosen);
+  };
+
+  const filledQuestions = manualQuestions.filter((q) => q.trim()).length;
+  const missing = [];
+  if (!roleName.trim()) missing.push('a role name');
+  if (jdMode === 'text' ? !jobDescriptionText.trim() : !jdFile) missing.push('a job description');
+  if (questionMode === 'MANUAL' && filledQuestions === 0) missing.push('at least one question');
+  const canSubmit = missing.length === 0;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!canSubmit) return;
+    if (!canSubmit || submitting) return;
 
     setSubmitting(true);
     setError(null);
@@ -51,10 +88,7 @@ function CreateTemplateContent({ auth }) {
       }
       formData.append('questionMode', questionMode);
       if (questionMode === 'MANUAL') {
-        formData.append(
-          'manualQuestions',
-          JSON.stringify(manualQuestions.map((q) => q.trim()).filter(Boolean))
-        );
+        formData.append('manualQuestions', JSON.stringify(manualQuestions.map((q) => q.trim()).filter(Boolean)));
       }
 
       await api.createTemplate(formData);
@@ -67,169 +101,152 @@ function CreateTemplateContent({ auth }) {
 
   if (auth.orgUser.role !== 'ADMIN') {
     return (
-      <Layout>
-        <p className="text-red-600">Only org admins can create interview templates.</p>
+      <Layout variant="reviewer" auth={auth} title="Create interview">
+        <PageHeader title="Create interview" back={BACK} />
+        <Alert tone="warning" title="Admins only">
+          Only organisation admins can create interviews. Ask an admin in your organisation to set one up.
+        </Alert>
       </Layout>
     );
   }
 
   return (
-    <Layout>
-      <h1 className="text-2xl font-semibold mb-1">Create interview</h1>
-      <p className="text-slate-500 mb-6">
-        Define the role and job description once, then invite candidates to it individually.
-      </p>
+    <Layout variant="reviewer" auth={auth} title="Create interview">
+      <PageHeader
+        back={BACK}
+        title="Create interview"
+        description="Define the role and job description once, then invite candidates to it. Creating an interview doesn't use credits; each invite does."
+      />
 
       <form onSubmit={handleSubmit} className="space-y-6">
-        <section className="bg-white border border-slate-200 rounded-lg p-5 space-y-4">
-          <h2 className="font-medium text-slate-800">Role</h2>
+        <Card title="Role">
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Role name" required>
               <input
                 type="text"
-                required
                 value={roleName}
                 onChange={(e) => setRoleName(e.target.value)}
+                placeholder="e.g. Backend Engineer"
                 className="input"
               />
             </Field>
-            <Field label="Job ID (optional)">
+            <Field label="Job ID" hint="Optional. Your internal reference.">
               <input type="text" value={jobId} onChange={(e) => setJobId(e.target.value)} className="input" />
             </Field>
           </div>
-        </section>
+        </Card>
 
-        <section className="bg-white border border-slate-200 rounded-lg p-5 space-y-3">
-          <h2 className="font-medium text-slate-800">Job description</h2>
-          <div className="flex gap-3 text-sm">
-            <label className="flex items-center gap-2">
-              <input type="radio" checked={jdMode === 'text'} onChange={() => setJdMode('text')} />
-              Paste text
-            </label>
-            <label className="flex items-center gap-2">
-              <input type="radio" checked={jdMode === 'file'} onChange={() => setJdMode('file')} />
-              Upload file (PDF/DOCX)
-            </label>
-          </div>
+        <Card
+          title="Job description"
+          description="Used to generate questions and to evaluate answers."
+          actions={
+            <SegmentedControl
+              legend="Job description source"
+              name="jd-mode"
+              value={jdMode}
+              onChange={setJdMode}
+              options={[
+                { value: 'text', label: 'Paste text' },
+                { value: 'file', label: 'Upload file' },
+              ]}
+            />
+          }
+        >
           {jdMode === 'text' ? (
-            <textarea
-              rows={6}
-              value={jobDescriptionText}
-              onChange={(e) => setJobDescriptionText(e.target.value)}
-              className="input"
-              placeholder="Paste the job description"
-            />
+            <Field label="Job description text" hideLabel required>
+              <textarea
+                rows={10}
+                value={jobDescriptionText}
+                onChange={(e) => setJobDescriptionText(e.target.value)}
+                className="input leading-relaxed"
+                placeholder="Paste the job description"
+              />
+            </Field>
           ) : (
-            <input
-              type="file"
-              accept=".pdf,.docx"
-              onChange={(e) => setJdFile(e.target.files[0] || null)}
-              className="block w-full text-sm border border-slate-300 rounded-md p-2"
-            />
-          )}
-        </section>
-
-        <section className="bg-white border border-slate-200 rounded-lg p-5 space-y-3">
-          <h2 className="font-medium text-slate-800">Questions</h2>
-          <div className="flex gap-3">
-            <ModeOption
-              label="AI-generated"
-              description="Personalized per candidate from JD + their resume"
-              selected={questionMode === 'AI'}
-              onClick={() => setQuestionMode('AI')}
-            />
-            <ModeOption
-              label="Manual"
-              description="Same fixed questions for every candidate"
-              selected={questionMode === 'MANUAL'}
-              onClick={() => setQuestionMode('MANUAL')}
-            />
-          </div>
-
-          {questionMode === 'MANUAL' && (
-            <div className="space-y-2 pt-2">
-              {manualQuestions.map((q, i) => (
-                <div key={i} className="flex gap-2">
-                  <input
-                    type="text"
-                    value={q}
-                    onChange={(e) => updateManualQuestion(i, e.target.value)}
-                    className="input"
-                    placeholder={`Question ${i + 1}`}
-                  />
-                  {manualQuestions.length > 1 && (
-                    <button
-                      type="button"
-                      onClick={() => removeManualQuestion(i)}
-                      className="text-sm text-slate-400 hover:text-red-600 px-2"
-                    >
-                      Remove
-                    </button>
-                  )}
-                </div>
-              ))}
-              <button
-                type="button"
-                onClick={addManualQuestion}
-                className="text-sm text-slate-600 hover:text-slate-900 underline"
-              >
-                + Add question
-              </button>
+            <div className="space-y-2">
+              <Field label="Job description file" hint="PDF or DOCX, up to 15 MB." error={jdFileError} required>
+                <input type="file" accept=".pdf,.docx" onChange={handleJdFile} className="file-input" />
+              </Field>
+              {jdFile && (
+                <p className="flex items-center gap-2 text-sm text-slate-700">
+                  <Icon name="file" className="h-4 w-4 text-slate-500" />
+                  <span className="truncate">{jdFile.name}</span>
+                  <span className="text-slate-500">({formatFileSize(jdFile.size)})</span>
+                </p>
+              )}
             </div>
           )}
-        </section>
+        </Card>
 
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        <Card title="Questions">
+          <ChoiceCards
+            legend="Question mode"
+            hideLegend
+            name="question-mode"
+            value={questionMode}
+            onChange={setQuestionMode}
+            options={[
+              {
+                value: 'AI',
+                label: 'AI-generated',
+                description: 'Personalised per candidate from the job description and their resume.',
+              },
+              { value: 'MANUAL', label: 'Manual', description: 'The same fixed questions for every candidate.' },
+            ]}
+          />
 
-        <button
-          type="submit"
-          disabled={!canSubmit}
-          className="w-full bg-slate-900 text-white rounded-md py-2.5 font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-800"
-        >
-          {submitting ? 'Creating…' : 'Create interview'}
-        </button>
+          {questionMode === 'MANUAL' && (
+            <fieldset className="mt-5 space-y-3">
+              <legend className="label mb-2">Questions, in the order candidates will see them</legend>
+              <ol className="space-y-2">
+                {manualQuestions.map((q, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    <span className="mt-2 w-6 shrink-0 text-right text-sm text-slate-500" aria-hidden="true">
+                      {i + 1}.
+                    </span>
+                    <Field label={`Question ${i + 1}`} hideLabel className="flex-1">
+                      <input
+                        ref={i === manualQuestions.length - 1 ? lastQuestionRef : undefined}
+                        type="text"
+                        value={q}
+                        onChange={(e) => updateManualQuestion(i, e.target.value)}
+                        className="input"
+                      />
+                    </Field>
+                    {manualQuestions.length > 1 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => removeManualQuestion(i)}
+                        aria-label={`Remove question ${i + 1}`}
+                        className="mt-0.5 text-slate-500 hover:text-rose-700"
+                      >
+                        <Icon name="x" />
+                      </Button>
+                    )}
+                  </li>
+                ))}
+              </ol>
+              <Button variant="secondary" size="sm" onClick={addManualQuestion}>
+                <Icon name="plus" />
+                Add question
+              </Button>
+            </fieldset>
+          )}
+        </Card>
+
+        <FormError>{error}</FormError>
+
+        <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-end">
+          {!canSubmit && <p className="hint sm:mr-auto">Still needed: {missing.join(', ')}.</p>}
+          <ButtonLink href="/dashboard" variant="ghost">
+            Cancel
+          </ButtonLink>
+          <Button type="submit" loading={submitting} loadingText="Creating…" disabled={!canSubmit}>
+            Create interview
+          </Button>
+        </div>
       </form>
-
-      <style jsx global>{`
-        .input {
-          width: 100%;
-          border: 1px solid #cbd5e1;
-          border-radius: 0.375rem;
-          padding: 0.5rem 0.75rem;
-          font-size: 0.875rem;
-        }
-        .input:focus {
-          outline: 2px solid #0f172a;
-          outline-offset: 1px;
-        }
-      `}</style>
     </Layout>
-  );
-}
-
-function Field({ label, required, children }) {
-  return (
-    <label className="block text-sm">
-      <span className="text-slate-700 font-medium">
-        {label}
-        {required && <span className="text-red-500"> *</span>}
-      </span>
-      <div className="mt-1">{children}</div>
-    </label>
-  );
-}
-
-function ModeOption({ label, description, selected, onClick }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex-1 text-left border rounded-md p-3 transition-colors ${
-        selected ? 'border-slate-900 bg-slate-50' : 'border-slate-200 hover:border-slate-300'
-      }`}
-    >
-      <p className="text-sm font-medium text-slate-800">{label}</p>
-      <p className="text-xs text-slate-500 mt-0.5">{description}</p>
-    </button>
   );
 }

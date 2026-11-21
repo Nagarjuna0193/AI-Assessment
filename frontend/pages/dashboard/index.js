@@ -1,158 +1,207 @@
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/router';
+import { useCallback, useEffect, useId, useState } from 'react';
 import Link from 'next/link';
 import Layout from '../../components/Layout';
 import RequireAuth from '../../components/RequireAuth';
 import { RecommendationBadge } from '../../components/FeedbackReport';
+import {
+  Alert,
+  Badge,
+  Button,
+  ButtonLink,
+  CopyButton,
+  CopyableLink,
+  EmptyState,
+  Field,
+  FormError,
+  Icon,
+  LoadingState,
+  PageHeader,
+  SegmentedControl,
+  StatusBadge,
+} from '../../components/ui';
 import { api, ApiError } from '../../lib/api';
+import { plural } from '../../lib/format';
 
-const STATUS_STYLES = {
-  INVITED: 'bg-slate-100 text-slate-600',
-  IN_PROGRESS: 'bg-amber-100 text-amber-700',
-  COMPLETED: 'bg-emerald-100 text-emerald-700',
-  CANCELLED: 'bg-slate-100 text-slate-400',
-};
+const MAX_BULK_INVITES = 100;
 
 export default function DashboardPage() {
-  return <RequireAuth>{(auth) => <DashboardContent auth={auth} />}</RequireAuth>;
+  return <RequireAuth>{(auth, refreshAuth) => <DashboardContent auth={auth} refreshAuth={refreshAuth} />}</RequireAuth>;
 }
 
-function DashboardContent({ auth }) {
-  const router = useRouter();
+function DashboardContent({ auth, refreshAuth }) {
   const [templates, setTemplates] = useState(null);
   const [error, setError] = useState(null);
   const [expanded, setExpanded] = useState(null);
+  const isAdmin = auth.orgUser.role === 'ADMIN';
 
-  const load = () =>
-    api
-      .listTemplates()
-      .then((data) => setTemplates(data.templates))
-      .catch((err) => setError(err instanceof ApiError ? err.message : 'Could not load interviews.'));
+  const load = useCallback(
+    () =>
+      api
+        .listTemplates()
+        .then((data) => {
+          setTemplates(data.templates);
+          setError(null);
+        })
+        .catch((err) => setError(err instanceof ApiError ? err.message : 'Could not load interviews.')),
+    []
+  );
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [load]);
 
-  const handleLogout = async () => {
-    await api.logout();
-    router.push('/login');
-  };
+  // After an invite: refresh the list and the header's credit balance.
+  const handleInvited = useCallback(() => Promise.all([load(), refreshAuth()]), [load, refreshAuth]);
+
+  const openReviewSessions = (templates || []).flatMap((t) =>
+    t.sessions.filter((s) => s.openReviewRequests > 0).map((s) => ({ ...s, roleName: t.roleName }))
+  );
 
   return (
-    <Layout
-      accountInfo={
-        <span className="text-sm text-slate-500 flex items-center gap-3">
-          {auth.organization.name} · {auth.organization.creditBalance} credits
-          <button onClick={handleLogout} className="text-slate-500 hover:text-slate-800 underline">
-            Log out
-          </button>
-        </span>
-      }
-    >
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold">Interviews</h1>
-        {auth.orgUser.role === 'ADMIN' && (
-          <Link
-            href="/admin/templates/new"
-            className="bg-slate-900 text-white rounded-md px-4 py-2 text-sm font-medium hover:bg-slate-800"
-          >
-            + Create interview
-          </Link>
-        )}
-      </div>
+    <Layout variant="reviewer" auth={auth} title="Interviews" width="wide">
+      <PageHeader
+        title="Interviews"
+        description="Each interview is a role and job description. Invite candidates to it, then review their reports."
+        actions={
+          isAdmin && (
+            <ButtonLink href="/admin/templates/new">
+              <Icon name="plus" />
+              Create interview
+            </ButtonLink>
+          )
+        }
+      />
 
-      {error && <p className="text-red-600 text-sm mb-4">{error}</p>}
-      {!templates && !error && <p className="text-slate-500">Loading…</p>}
+      {openReviewSessions.length > 0 && (
+        <Alert tone="warning" title={`${plural(openReviewSessions.length, 'candidate')} asked for a human review`} className="mb-6">
+          <ul className="mt-1 space-y-1">
+            {openReviewSessions.map((s) => (
+              <li key={s.id}>
+                <Link href={`/dashboard/${s.id}#human-review`} className="font-medium underline underline-offset-2">
+                  {s.candidateName}
+                </Link>{' '}
+                — {s.roleName}
+              </li>
+            ))}
+          </ul>
+        </Alert>
+      )}
+
+      {error && (
+        <Alert tone="error" title="Couldn't load interviews" className="mb-6">
+          <p>{error}</p>
+          <Button variant="secondary" size="sm" className="mt-3" onClick={load}>
+            Try again
+          </Button>
+        </Alert>
+      )}
+      {!templates && !error && <LoadingState label="Loading interviews…" />}
       {templates && templates.length === 0 && (
-        <p className="text-slate-500">
-          No interview templates yet.{' '}
-          {auth.orgUser.role === 'ADMIN' && (
-            <Link href="/admin/templates/new" className="underline">
-              Create one
-            </Link>
-          )}
-        </p>
+        <EmptyState
+          title="No interviews yet"
+          action={
+            isAdmin ? (
+              <ButtonLink href="/admin/templates/new">Create your first interview</ButtonLink>
+            ) : null
+          }
+        >
+          {isAdmin
+            ? 'Create an interview for a role, then invite candidates to it.'
+            : 'An admin in your organisation needs to create an interview first.'}
+        </EmptyState>
       )}
 
       {templates && templates.length > 0 && (
-        <div className="space-y-3">
+        <ul className="space-y-3">
           {templates.map((template) => (
-            <TemplateCard
-              key={template.id}
-              template={template}
-              expanded={expanded === template.id}
-              onToggle={() => setExpanded(expanded === template.id ? null : template.id)}
-              canInvite={auth.orgUser.role === 'ADMIN'}
-              onInvited={load}
-            />
+            <li key={template.id}>
+              <TemplateCard
+                template={template}
+                expanded={expanded === template.id}
+                onToggle={() => setExpanded(expanded === template.id ? null : template.id)}
+                canInvite={isAdmin}
+                credits={auth.organization.creditBalance}
+                onInvited={handleInvited}
+              />
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </Layout>
   );
 }
 
-function TemplateCard({ template, expanded, onToggle, canInvite, onInvited }) {
+function TemplateCard({ template, expanded, onToggle, canInvite, credits, onInvited }) {
+  const panelId = useId();
+  const completed = template.sessions.filter((s) => s.status === 'COMPLETED').length;
+  const openReviews = template.sessions.filter((s) => s.openReviewRequests > 0).length;
+
   return (
-    <div className="bg-white border border-slate-200 rounded-lg">
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-slate-50"
-      >
-        <div>
-          <p className="font-medium text-slate-800">{template.roleName}</p>
-          <p className="text-sm text-slate-500">
-            {template.jobId ? `${template.jobId} · ` : ''}
-            {template.questionMode === 'AI' ? 'AI-generated questions' : 'Manual questions'} ·{' '}
-            {template.sessionCount} candidate{template.sessionCount === 1 ? '' : 's'}
-          </p>
-        </div>
-        <span className="text-slate-400 text-sm">{expanded ? '▲' : '▼'}</span>
-      </button>
+    <div className="card overflow-hidden">
+      <h2>
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          aria-controls={panelId}
+          className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left hover:bg-slate-50"
+        >
+          <span className="min-w-0">
+            <span className="block font-medium text-slate-900">{template.roleName}</span>
+            <span className="mt-0.5 block text-sm text-slate-600">
+              {template.jobId ? `${template.jobId} · ` : ''}
+              {template.questionMode === 'AI' ? 'AI-generated questions' : 'Manual questions'} ·{' '}
+              {plural(template.sessionCount, 'candidate')}
+              {template.sessionCount > 0 && ` · ${completed} completed`}
+            </span>
+          </span>
+          <span className="flex shrink-0 items-center gap-3">
+            {openReviews > 0 && <Badge tone="warning">{plural(openReviews, 'review request')}</Badge>}
+            <Icon
+              name="chevronDown"
+              className={`h-5 w-5 text-slate-500 transition-transform ${expanded ? 'rotate-180' : ''}`}
+            />
+          </span>
+        </button>
+      </h2>
 
       {expanded && (
-        <div className="border-t border-slate-100 px-5 py-4 space-y-4">
-          {canInvite && <InvitePanel templateId={template.id} onInvited={onInvited} />}
+        <div id={panelId} className="space-y-4 border-t border-slate-100 px-5 py-4">
+          {canInvite && <InvitePanel templateId={template.id} credits={credits} onInvited={onInvited} />}
 
           {template.sessions.length === 0 ? (
-            <p className="text-sm text-slate-500">No candidates invited yet.</p>
+            <p className="text-sm text-slate-600">No candidates invited yet.</p>
           ) : (
-            <div className="divide-y divide-slate-100 border border-slate-100 rounded-md">
+            <ul aria-label={`Candidates for ${template.roleName}`} className="divide-y divide-slate-100 rounded-md border border-slate-200">
               {template.sessions.map((session) => (
-                <Link
-                  key={session.id}
-                  href={`/dashboard/${session.id}`}
-                  className="flex items-center justify-between px-4 py-3 hover:bg-slate-50"
-                >
-                  <div>
-                    <p className="text-sm font-medium text-slate-800">{session.candidateName}</p>
-                    <p className="text-xs text-slate-500">{session.email}</p>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    {session.resumeJdScore != null && (
-                      <span className="text-xs text-slate-500">JD fit: {session.resumeJdScore}</span>
-                    )}
-                    {session.openReviewRequests > 0 && (
-                      <span className="text-xs font-medium px-2 py-1 rounded-full bg-amber-100 text-amber-800">
-                        Review requested
-                      </span>
-                    )}
-                    <RecommendationBadge recommendation={session.recommendation} />
-                    {session.evaluationScore != null && (
-                      <span className="text-sm font-medium text-slate-700">{session.evaluationScore}/100</span>
-                    )}
-                    <span
-                      className={`text-xs font-medium px-2 py-1 rounded-full ${
-                        STATUS_STYLES[session.status] || 'bg-slate-100 text-slate-600'
-                      }`}
-                    >
-                      {session.status}
+                <li key={session.id}>
+                  <Link
+                    href={`/dashboard/${session.id}`}
+                    className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 hover:bg-slate-50"
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium text-slate-900">{session.candidateName}</span>
+                      <span className="block truncate text-xs text-slate-600">{session.email}</span>
                     </span>
-                  </div>
-                </Link>
+                    <span className="flex flex-wrap items-center gap-2">
+                      {session.openReviewRequests > 0 && <Badge tone="warning">Review requested</Badge>}
+                      {session.resumeJdScore != null && (
+                        <span className="text-xs text-slate-600">
+                          Resume fit <span className="font-medium text-slate-900">{session.resumeJdScore}</span>
+                        </span>
+                      )}
+                      {session.evaluationScore != null && (
+                        <span className="text-xs text-slate-600">
+                          Interview <span className="font-medium text-slate-900">{session.evaluationScore}/100</span>
+                        </span>
+                      )}
+                      <RecommendationBadge recommendation={session.recommendation} />
+                      <StatusBadge status={session.status} />
+                    </span>
+                  </Link>
+                </li>
               ))}
-            </div>
+            </ul>
           )}
         </div>
       )}
@@ -160,31 +209,32 @@ function TemplateCard({ template, expanded, onToggle, canInvite, onInvited }) {
   );
 }
 
-function InvitePanel({ templateId, onInvited }) {
-  const [bulk, setBulk] = useState(false);
+function InvitePanel({ templateId, credits, onInvited }) {
+  const [mode, setMode] = useState('single');
   return (
-    <div className="bg-slate-50 border border-slate-200 rounded-md p-3 space-y-2">
-      <div className="flex items-center justify-between">
-        <p className="text-sm font-medium text-slate-700">Invite {bulk ? 'candidates in bulk' : 'a candidate'}</p>
-        <div className="flex text-xs border border-slate-300 rounded-md overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setBulk(false)}
-            className={`px-2 py-1 ${!bulk ? 'bg-slate-900 text-white' : 'bg-white text-slate-600'}`}
-          >
-            Single
-          </button>
-          <button
-            type="button"
-            onClick={() => setBulk(true)}
-            className={`px-2 py-1 ${bulk ? 'bg-slate-900 text-white' : 'bg-white text-slate-600'}`}
-          >
-            Bulk
-          </button>
-        </div>
+    <div className="space-y-3 rounded-md border border-slate-200 bg-slate-50 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-medium text-slate-800">
+          Invite {mode === 'bulk' ? 'candidates in bulk' : 'a candidate'}
+        </h3>
+        <SegmentedControl
+          legend="Invite mode"
+          name={`invite-mode-${templateId}`}
+          value={mode}
+          onChange={setMode}
+          options={[
+            { value: 'single', label: 'Single' },
+            { value: 'bulk', label: 'Bulk' },
+          ]}
+        />
       </div>
-      {bulk ? (
-        <BulkInviteForm templateId={templateId} onInvited={onInvited} />
+      {credits <= 0 && (
+        <Alert tone="warning">
+          Your organisation has no credits left, so invites will fail. Contact your account manager to add credits.
+        </Alert>
+      )}
+      {mode === 'bulk' ? (
+        <BulkInviteForm templateId={templateId} credits={credits} onInvited={onInvited} />
       ) : (
         <InviteForm templateId={templateId} onInvited={onInvited} />
       )}
@@ -209,7 +259,7 @@ function parseCandidateRows(text) {
   });
 }
 
-function BulkInviteForm({ templateId, onInvited }) {
+function BulkInviteForm({ templateId, credits, onInvited }) {
   const [text, setText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
@@ -217,6 +267,8 @@ function BulkInviteForm({ templateId, onInvited }) {
   const [invites, setInvites] = useState(null);
 
   const rows = parseCandidateRows(text);
+  const tooMany = rows.length > MAX_BULK_INVITES;
+  const notEnoughCredits = rows.length > credits;
 
   const handleFile = (e) => {
     const file = e.target.files[0];
@@ -236,7 +288,7 @@ function BulkInviteForm({ templateId, onInvited }) {
       const result = await api.bulkInviteCandidates(templateId, rows);
       setInvites(result.invites);
       setText('');
-      onInvited();
+      await onInvited();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not invite these candidates.');
       if (err instanceof ApiError && err.body && Array.isArray(err.body.rowErrors)) {
@@ -247,50 +299,72 @@ function BulkInviteForm({ templateId, onInvited }) {
     }
   };
 
+  const copyAllText = invites ? invites.map((inv) => `${inv.session.candidateName}, ${inv.session.email}, ${inv.inviteLink}`).join('\n') : '';
+
   return (
-    <form onSubmit={handleSubmit} className="space-y-2">
-      <p className="text-xs text-slate-500">
-        One candidate per line as <span className="font-mono">name, email</span>, or upload a .csv with
-        those two columns. Each invite uses 1 credit. If any row is invalid, nobody is invited.
-      </p>
-      <textarea
-        rows={5}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder={'Jane Doe, jane@example.com\nRavi Kumar, ravi@example.com'}
-        className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm font-mono"
-      />
-      <div className="flex flex-wrap items-center gap-2">
-        <input type="file" accept=".csv,text/csv,text/plain" onChange={handleFile} className="text-xs" />
-        <button
-          type="submit"
-          disabled={submitting || rows.length === 0}
-          className="ml-auto bg-slate-900 text-white rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-40"
-        >
-          {submitting ? 'Inviting…' : `Invite ${rows.length} candidate${rows.length === 1 ? '' : 's'}`}
-        </button>
-      </div>
-      {error && <p className="text-xs text-red-600">{error}</p>}
-      {rowErrors.length > 0 && (
-        <ul className="text-xs text-red-600 list-disc pl-5">
-          {rowErrors.map((r, i) => (
-            <li key={i}>
-              Row {r.row}: {r.message}
-            </li>
-          ))}
-        </ul>
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <Field
+        label="Candidates"
+        hint={`One per line as "name, email" (a header row is skipped). Up to ${MAX_BULK_INVITES} per batch, 1 credit each. If any row is invalid, nobody is invited.`}
+      >
+        <textarea
+          rows={5}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={'Jane Doe, jane@example.com\nRavi Kumar, ravi@example.com'}
+          className="input font-mono"
+        />
+      </Field>
+      <Field label="Or upload a CSV file">
+        <input type="file" accept=".csv,text/csv,text/plain" onChange={handleFile} className="file-input" />
+      </Field>
+
+      {tooMany && <Alert tone="warning">That&apos;s {rows.length} rows; the limit is {MAX_BULK_INVITES} per batch.</Alert>}
+      {!tooMany && notEnoughCredits && rows.length > 0 && (
+        <Alert tone="warning">
+          This batch needs {plural(rows.length, 'credit')}, but your organisation has {credits}.
+        </Alert>
       )}
+
+      <div className="flex justify-end">
+        <Button type="submit" loading={submitting} loadingText="Inviting…" disabled={rows.length === 0 || tooMany}>
+          Invite {plural(rows.length, 'candidate')}
+        </Button>
+      </div>
+
+      <FormError>
+        {error && (
+          <>
+            <p>{error}</p>
+            {rowErrors.length > 0 && (
+              <ul className="mt-2 list-disc space-y-0.5 pl-5">
+                {rowErrors.map((r, i) => (
+                  <li key={i}>
+                    Row {r.row}: {r.message}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </FormError>
+
       {invites && (
-        <div className="text-xs text-emerald-700 space-y-1">
-          <p className="font-medium">{invites.length} invited. Send each candidate their link:</p>
-          <ul className="space-y-0.5 break-all">
+        <Alert tone="success" title={`${plural(invites.length, 'candidate')} invited`}>
+          <p className="mb-3">Send each candidate their own link. Each link is personal: don&apos;t share it between people.</p>
+          <ul className="space-y-2">
             {invites.map((inv) => (
               <li key={inv.session.id}>
-                {inv.session.candidateName} ({inv.session.email}): <span className="font-mono">{inv.inviteLink}</span>
+                <CopyableLink label={`${inv.session.candidateName} (${inv.session.email})`} url={inv.inviteLink} />
               </li>
             ))}
           </ul>
-        </div>
+          {invites.length > 1 && (
+            <div className="mt-3">
+              <CopyButton text={copyAllText} label="Copy all as CSV" />
+            </div>
+          )}
+        </Alert>
       )}
     </form>
   );
@@ -301,22 +375,22 @@ function InviteForm({ templateId, onInvited }) {
   const [email, setEmail] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
-  const [inviteLink, setInviteLink] = useState(null);
+  const [invite, setInvite] = useState(null);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSubmitting(true);
     setError(null);
-    setInviteLink(null);
+    setInvite(null);
     try {
-      const { inviteLink: link } = await api.inviteCandidate(templateId, {
+      const { inviteLink } = await api.inviteCandidate(templateId, {
         candidateName: candidateName.trim(),
         email: email.trim(),
       });
-      setInviteLink(link);
+      setInvite({ name: candidateName.trim(), link: inviteLink });
       setCandidateName('');
       setEmail('');
-      onInvited();
+      await onInvited();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not invite this candidate.');
     } finally {
@@ -325,37 +399,42 @@ function InviteForm({ templateId, onInvited }) {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-2">
-      <div className="flex flex-wrap gap-2">
-        <input
-          type="text"
-          required
-          placeholder="Candidate name"
-          value={candidateName}
-          onChange={(e) => setCandidateName(e.target.value)}
-          className="flex-1 min-w-[10rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm"
-        />
-        <input
-          type="email"
-          required
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="flex-1 min-w-[10rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm"
-        />
-        <button
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+        <Field label="Candidate name" required>
+          <input
+            type="text"
+            autoComplete="off"
+            value={candidateName}
+            onChange={(e) => setCandidateName(e.target.value)}
+            className="input"
+          />
+        </Field>
+        <Field label="Email" required>
+          <input
+            type="email"
+            autoComplete="off"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="input"
+          />
+        </Field>
+        <Button
           type="submit"
-          disabled={submitting || !candidateName.trim() || !email.trim()}
-          className="bg-slate-900 text-white rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-40"
+          loading={submitting}
+          loadingText="Inviting…"
+          disabled={!candidateName.trim() || !email.trim()}
         >
-          {submitting ? 'Inviting…' : 'Invite'}
-        </button>
+          Invite
+        </Button>
       </div>
-      {error && <p className="text-xs text-red-600">{error}</p>}
-      {inviteLink && (
-        <p className="text-xs text-emerald-700 break-all">
-          Invite link (send to the candidate): <span className="font-mono">{inviteLink}</span>
-        </p>
+      <p className="hint">Uses 1 credit. You&apos;ll get a personal link to send to the candidate.</p>
+      <FormError>{error}</FormError>
+      {invite && (
+        <Alert tone="success" title={`${invite.name} invited`}>
+          <p className="mb-2">Send this link to the candidate:</p>
+          <CopyableLink url={invite.link} />
+        </Alert>
       )}
     </form>
   );

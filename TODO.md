@@ -1,6 +1,6 @@
 # TODO / Phase Checklist
 
-Current phase: **Phase 7 — compliance hardening done** (next: Phase 8 pilot deployment)
+Current phase: **Phase 7.5 — frontend UI pass done** (next: Phase 8 pilot deployment)
 
 See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 
@@ -245,6 +245,46 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 - [ ] Name the breach-response owner + backup (`docs/COMPLIANCE.md`)
 - [ ] Counsel review of `docs/COMPLIANCE.md` (esp. breach timelines)
 
+## Phase 7.5 — Frontend UI pass (design system, accessibility, UX)
+> Requested 2026-11-21 ("build UI ... follow all applicable best practices").
+> All screens already existed from Phases 3–7; this pass reworks how they
+> look and behave without changing any API call, request body, or feature
+> scope. See `docs/DECISIONS.md` (2026-11-21).
+- [x] Design system: Tailwind `brand` token, `@layer components` classes
+      (`.btn-*`, `.input`, `.file-input`, `.card`, `.label`, `.hint`) and
+      shared primitives in `frontend/components/ui.js` (Button, Field,
+      ChoiceCards, SegmentedControl, Alert, Card, PageHeader, Badge,
+      StatusBadge, CopyButton/CopyableLink, LoadingState, EmptyState)
+- [x] Separate candidate and reviewer shells in `Layout.js` (candidates no
+      longer see a "Reviewer dashboard" link); per-page `<title>`, skip
+      link, `lang="en"`
+- [x] Accessibility: every input has a programmatic label; hints/errors
+      wired via `aria-describedby`/`aria-invalid`; radio-based choice cards
+      instead of div buttons; `aria-expanded` accordions; progressbar;
+      live regions for async status; focus moved to new question / step /
+      confirm panels; focusable scrollable consent text; AA text contrast;
+      reduced-motion support; `plugin:jsx-a11y/recommended` lint, clean
+- [x] Candidate flow: step indicator, no full-page reload flash between
+      questions (focus and proctoring listeners survive), unsaved-answer
+      warning on leave, Ctrl+Enter submit, recording timer, client-side
+      PDF/DOCX + 15 MB check, character counter on review requests
+- [x] Reviewer UX: open-review-request alert on the dashboard and detail
+      page (with jump link), readable status labels, en-IN dates,
+      copy-to-clipboard invite links (+ "copy all" for bulk), credit
+      balance refreshes after invites, credit/batch-size warnings, back
+      links, two-column session detail on desktop, mobile-safe rows
+- [x] `RequireAuth` only redirects to login on a 401; other failures show
+      a retry instead of looking like a logout
+- [x] Security/privacy headers in `next.config.js` (`Referrer-Policy:
+      no-referrer`, no framing, `nosniff`, mic-only Permissions-Policy) and
+      site-wide `noindex`; `X-Powered-By` removed
+- [x] Custom 404 page
+- [x] Verified: `npm run lint` clean, `npm run build` passes, headers
+      confirmed on `next start`, screenshots at 390px and 1280px against a
+      fixture API (no horizontal overflow)
+- [ ] No automated frontend tests yet (no test runner in `frontend/`) —
+      parked below
+
 ## Phase 8 — Pilot deployment
 - [ ] Deploy to Railway/Render
 - [ ] Schedule `npm run retention` daily (host cron)
@@ -274,3 +314,11 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 - Email notifications for human-review requests (to reviewers) and
   resolutions (to candidates) — same channel decision as invite emails
 - Printable / exportable feedback report (PDF) — not requested yet
+- Frontend automated tests (component tests + an axe accessibility check
+  in CI) — Phase 7.5 verified by lint, build and manual screenshots only
+- Full Content-Security-Policy (script/style sources) for the frontend —
+  only `frame-ancestors` is set; a strict CSP needs nonce support for
+  Next.js inline scripts and should be tested on the real host (Phase 8)
+- Dark mode for the UI — not requested
+- Per-client branding (logo/colour) — the `brand` Tailwind token is the
+  hook, but there's no per-org theming

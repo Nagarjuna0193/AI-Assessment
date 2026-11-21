@@ -1,29 +1,36 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '../../components/Layout';
 import RequireAuth from '../../components/RequireAuth';
 import FeedbackReport from '../../components/FeedbackReport';
 import ReviewRequestsPanel from '../../components/ReviewRequestsPanel';
+import { Alert, Badge, Button, Card, FormError, LoadingState, PageHeader, StatusBadge } from '../../components/ui';
 import { api, ApiError } from '../../lib/api';
+import { formatDate, formatTime, plural } from '../../lib/format';
+
+const BACK = { href: '/dashboard', label: 'All interviews' };
 
 export default function SessionDetailPage() {
-  return <RequireAuth>{() => <SessionDetailContent />}</RequireAuth>;
+  return <RequireAuth>{(auth) => <SessionDetailContent auth={auth} />}</RequireAuth>;
 }
 
-function SessionDetailContent() {
+function SessionDetailContent({ auth }) {
   const router = useRouter();
   const { id } = router.query;
 
   const [data, setData] = useState(null);
-  const [error, setError] = useState(null);
+  const [loadError, setLoadError] = useState(null);
+  const [evalError, setEvalError] = useState(null);
   const [evaluating, setEvaluating] = useState(false);
+  const scrolledToHash = useRef(false);
 
   const load = useCallback(async (sessionId) => {
     try {
       const result = await api.getSessionDetail(sessionId);
       setData(result);
+      setLoadError(null);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not load this interview.');
+      setLoadError(err instanceof ApiError ? err.message : 'Could not load this interview.');
     }
   }, []);
 
@@ -31,31 +38,46 @@ function SessionDetailContent() {
     if (id) load(id);
   }, [id, load]);
 
+  // Content loads after navigation, so the browser can't jump to a #hash
+  // (e.g. #human-review from the dashboard alert) on its own.
+  useEffect(() => {
+    if (!data || scrolledToHash.current || typeof window === 'undefined' || !window.location.hash) return;
+    scrolledToHash.current = true;
+    const el = document.getElementById(window.location.hash.slice(1));
+    if (el) el.scrollIntoView({ block: 'start' });
+  }, [data]);
+
   const handleEvaluate = async () => {
     setEvaluating(true);
-    setError(null);
+    setEvalError(null);
     try {
       await api.evaluateSession(id);
       await load(id);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not run evaluation.');
+      setEvalError(err instanceof ApiError ? err.message : 'Could not run evaluation.');
     } finally {
       setEvaluating(false);
     }
   };
 
-  if (error && !data) {
+  if (loadError && !data) {
     return (
-      <Layout>
-        <p className="text-red-600">{error}</p>
+      <Layout variant="reviewer" auth={auth} title="Interview" width="wide">
+        <PageHeader title="Interview" back={BACK} />
+        <Alert tone="error" title="Couldn't load this interview">
+          <p>{loadError}</p>
+          <Button variant="secondary" size="sm" className="mt-3" onClick={() => load(id)}>
+            Try again
+          </Button>
+        </Alert>
       </Layout>
     );
   }
 
   if (!data) {
     return (
-      <Layout>
-        <p className="text-slate-500">Loading…</p>
+      <Layout variant="reviewer" auth={auth} title="Interview" width="wide">
+        <LoadingState label="Loading interview…" />
       </Layout>
     );
   }
@@ -65,133 +87,168 @@ function SessionDetailContent() {
   const openReviews = reviewRequests.filter((r) => r.status === 'OPEN').length;
 
   return (
-    <Layout>
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold">{session.candidateName}</h1>
-        <p className="text-slate-500">
-          {session.email} · {template.roleName}
-          {template.jobId ? ` (${template.jobId})` : ''} · {session.status}
-        </p>
-        {!session.anonymizedAt && session.dataRetentionUntil && (
-          <p className="text-xs text-slate-400 mt-1">
-            Personal data kept until {new Date(session.dataRetentionUntil).toLocaleDateString()}
-          </p>
+    <Layout variant="reviewer" auth={auth} title={session.candidateName} width="wide">
+      <PageHeader
+        back={BACK}
+        title={session.candidateName}
+        description={
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span>{session.email}</span>
+            <span aria-hidden="true">·</span>
+            <span>
+              {template.roleName}
+              {template.jobId ? ` (${template.jobId})` : ''}
+            </span>
+            {session.mode && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>{session.mode === 'VOICE' ? 'Voice interview' : 'Text interview'}</span>
+              </>
+            )}
+          </span>
+        }
+        actions={<StatusBadge status={session.status} />}
+      />
+
+      <div className="space-y-4">
+        {session.anonymizedAt && (
+          <Alert tone="info" title={`Personal data anonymized on ${formatDate(session.anonymizedAt)}`}>
+            The retention period ended or the candidate withdrew consent. Scores are kept for reporting; the resume,
+            answers and evidence are gone.
+          </Alert>
+        )}
+        {openReviews > 0 && (
+          <Alert tone="warning" title="The candidate has asked for a human review">
+            <a href="#human-review" className="font-medium underline underline-offset-2">
+              Go to the review request
+            </a>{' '}
+            and record an outcome. Their personal data is held from automatic deletion until it&apos;s resolved.
+          </Alert>
         )}
       </div>
 
-      {session.anonymizedAt && (
-        <div className="bg-slate-100 border border-slate-200 rounded-lg p-4 mb-6 text-sm text-slate-700">
-          Personal data for this candidate was anonymized on{' '}
-          {new Date(session.anonymizedAt).toLocaleDateString()} (retention period ended or the candidate
-          withdrew consent). Scores are kept for reporting; the resume, answers and evidence are gone.
-        </div>
-      )}
-
-      <section className="bg-white border border-slate-200 rounded-lg p-5 mb-6">
-        <h2 className="font-medium text-slate-800 mb-3">Resume fit</h2>
-        {session.resumeJdScore != null ? (
-          <div className="space-y-2">
-            <p className="text-3xl font-semibold text-slate-900">
-              {session.resumeJdScore}
-              <span className="text-base font-normal text-slate-400">/100</span>
-            </p>
-            {session.resumeJdRationale && (
-              <p className="text-slate-600 text-sm">{session.resumeJdRationale}</p>
+      <div className="mt-6 grid gap-6 lg:grid-cols-3">
+        <div className="space-y-6 lg:col-span-2">
+          <Card title="Feedback report" description="AI-assisted and advisory only. The hiring decision is made by a person.">
+            {evaluation ? (
+              <FeedbackReport evaluation={evaluation} />
+            ) : session.anonymizedAt ? (
+              <p className="text-sm text-slate-600">Not evaluated before the data was anonymized.</p>
+            ) : session.status === 'COMPLETED' ? (
+              <div className="space-y-3">
+                <p className="text-sm text-slate-600">
+                  Not evaluated yet. Running the evaluation sends the job description and transcript to the AI
+                  model, and the run is logged against your account.
+                </p>
+                <Button onClick={handleEvaluate} loading={evaluating} loadingText="Evaluating… this can take a minute">
+                  Run evaluation
+                </Button>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-600">Available once the candidate completes the interview.</p>
             )}
-          </div>
-        ) : (
-          <p className="text-slate-500 text-sm">Not yet available — the candidate hasn&apos;t uploaded a resume.</p>
-        )}
-      </section>
+            {evalError && (
+              <div className="mt-3">
+                <FormError>{evalError}</FormError>
+              </div>
+            )}
+          </Card>
 
-      <section className="bg-white border border-slate-200 rounded-lg p-5 mb-6">
-        <h2 className="font-medium text-slate-800 mb-3">Feedback report</h2>
-        {evaluation ? (
-          <FeedbackReport evaluation={evaluation} />
-        ) : session.anonymizedAt ? (
-          <p className="text-slate-500 text-sm">Not evaluated before the data was anonymized.</p>
-        ) : session.status === 'COMPLETED' ? (
-          <div>
-            <p className="text-slate-500 text-sm mb-3">Not yet evaluated.</p>
-            <button
-              onClick={handleEvaluate}
-              disabled={evaluating}
-              className="bg-slate-900 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-40 hover:bg-slate-800"
-            >
-              {evaluating ? 'Evaluating…' : 'Run evaluation'}
-            </button>
-          </div>
-        ) : (
-          <p className="text-slate-500 text-sm">
-            Evaluation available once the candidate completes the interview.
-          </p>
-        )}
-        {error && <p className="text-sm text-red-600 mt-3">{error}</p>}
-      </section>
+          <Card
+            id="human-review"
+            tone={openReviews ? 'warning' : 'default'}
+            title="Human review requests"
+            actions={openReviews > 0 && <Badge tone="warning">{openReviews} open</Badge>}
+            className="scroll-mt-6"
+          >
+            <ReviewRequestsPanel sessionId={id} requests={reviewRequests} onChange={() => load(id)} />
+          </Card>
 
-      <section
-        className={`bg-white border rounded-lg p-5 mb-6 ${openReviews ? 'border-amber-300' : 'border-slate-200'}`}
-      >
-        <h2 className="font-medium text-slate-800 mb-3">
-          Human review requests
-          {openReviews > 0 && <span className="ml-2 text-sm font-normal text-amber-700">({openReviews} open)</span>}
-        </h2>
-        <ReviewRequestsPanel sessionId={id} requests={reviewRequests} onChange={() => load(id)} />
-      </section>
-
-      {proctoring && (
-        <section className="bg-white border border-slate-200 rounded-lg p-5 mb-6">
-          <h2 className="font-medium text-slate-800 mb-1">Interview conduct</h2>
-          <p className="text-xs text-slate-500 mb-3">
-            Context only — not used by the AI evaluation. A switch can have innocent causes (a
-            notification, a dropped connection, a screen reader).
-          </p>
-          <div className="flex gap-8 text-sm">
-            <div>
-              <p className="text-2xl font-semibold text-slate-900">{proctoring.tabHiddenCount}</p>
-              <p className="text-slate-500">Left the tab</p>
-            </div>
-            <div>
-              <p className="text-2xl font-semibold text-slate-900">{proctoring.fullscreenExitCount}</p>
-              <p className="text-slate-500">Exited fullscreen</p>
-            </div>
-          </div>
-          {proctoring.events.length > 0 && (
-            <details className="mt-3 text-sm">
-              <summary className="cursor-pointer text-slate-600">Show times</summary>
-              <ul className="mt-2 space-y-1 text-slate-500">
-                {proctoring.events.map((e, i) => (
-                  <li key={i}>
-                    {new Date(e.occurredAt).toLocaleTimeString()} —{' '}
-                    {e.eventType === 'tab_hidden' ? 'left the tab' : 'exited fullscreen'}
+          <Card title="Transcript">
+            {transcript.length === 0 ? (
+              <p className="text-sm text-slate-600">No questions generated yet.</p>
+            ) : (
+              <ol className="space-y-5">
+                {transcript.map((t, i) => (
+                  <li key={t.questionId} className="border-b border-slate-100 pb-5 last:border-0 last:pb-0">
+                    <p className="flex gap-2 text-sm font-medium text-slate-900">
+                      <span className="shrink-0 text-brand-700">Q{i + 1}</span>
+                      <span>{t.questionText}</span>
+                    </p>
+                    <div className="mt-2 pl-8 text-sm leading-relaxed text-slate-700">
+                      {t.responseText ? (
+                        <p className="whitespace-pre-wrap">{t.responseText}</p>
+                      ) : (
+                        <p className="italic text-slate-500">No response yet</p>
+                      )}
+                    </div>
                   </li>
                 ))}
-              </ul>
-            </details>
-          )}
-        </section>
-      )}
+              </ol>
+            )}
+          </Card>
+        </div>
 
-      <section className="bg-white border border-slate-200 rounded-lg p-5">
-        <h2 className="font-medium text-slate-800 mb-3">Transcript</h2>
-        {transcript.length === 0 ? (
-          <p className="text-slate-500 text-sm">No questions generated yet.</p>
-        ) : (
-          <div className="space-y-4">
-            {transcript.map((t, i) => (
-              <div key={t.questionId} className="border-b border-slate-100 last:border-0 pb-4 last:pb-0">
-                <p className="text-sm font-medium text-slate-700">
-                  <span className="text-slate-400 mr-1">Q{i + 1}.</span>
-                  {t.questionText}
+        <div className="space-y-6">
+          <Card title="Resume fit" description="AI-assessed match between the resume and the job description.">
+            {session.resumeJdScore != null ? (
+              <div className="space-y-2">
+                <p className="text-3xl font-semibold text-slate-900">
+                  {session.resumeJdScore}
+                  <span className="text-base font-normal text-slate-500">/100</span>
                 </p>
-                <p className="text-sm text-slate-500 mt-1">
-                  {t.responseText || <span className="italic text-slate-400">No response yet</span>}
-                </p>
+                {session.resumeJdRationale && (
+                  <p className="text-sm leading-relaxed text-slate-700">{session.resumeJdRationale}</p>
+                )}
               </div>
-            ))}
-          </div>
-        )}
-      </section>
+            ) : (
+              <p className="text-sm text-slate-600">Not available yet — the candidate hasn&apos;t uploaded a resume.</p>
+            )}
+          </Card>
+
+          {proctoring && (
+            <Card
+              title="Interview conduct"
+              description="Context only — not used by the AI evaluation. A switch can have innocent causes (a notification, a dropped connection, a screen reader)."
+            >
+              <dl className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <dt className="text-slate-600">Left the tab</dt>
+                  <dd className="text-2xl font-semibold text-slate-900">{proctoring.tabHiddenCount}</dd>
+                </div>
+                <div>
+                  <dt className="text-slate-600">Exited fullscreen</dt>
+                  <dd className="text-2xl font-semibold text-slate-900">{proctoring.fullscreenExitCount}</dd>
+                </div>
+              </dl>
+              {proctoring.events.length > 0 && (
+                <details className="mt-4 text-sm">
+                  <summary className="cursor-pointer font-medium text-slate-700">
+                    Show times ({plural(proctoring.events.length, 'event')})
+                  </summary>
+                  <ul className="mt-2 space-y-1 text-slate-600">
+                    {proctoring.events.map((e, i) => (
+                      <li key={i}>
+                        <span className="font-mono tabular-nums">{formatTime(e.occurredAt)}</span> —{' '}
+                        {e.eventType === 'tab_hidden' ? 'left the tab' : 'exited fullscreen'}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </Card>
+          )}
+
+          {!session.anonymizedAt && session.dataRetentionUntil && (
+            <Card title="Data retention">
+              <p className="text-sm text-slate-700">
+                Personal data is kept until <span className="font-medium">{formatDate(session.dataRetentionUntil)}</span>,
+                then anonymized automatically.
+              </p>
+            </Card>
+          )}
+        </div>
+      </div>
     </Layout>
   );
 }

@@ -1,43 +1,56 @@
+import { Badge } from './ui';
+import { formatDateTime } from '../lib/format';
+
 // Phase 6: recruiter-facing view of an evaluation.v2 structured feedback
 // report. Older (pre-v2) evaluations have no recommendation/strengths/
 // concerns and a scorecard without evidence — every field is optional here.
 
-const RECOMMENDATION_STYLES = {
-  advance: { label: 'Advance', className: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
-  further_review: { label: 'Further review', className: 'bg-amber-50 text-amber-800 border-amber-200' },
-  do_not_advance: { label: 'Do not advance', className: 'bg-rose-50 text-rose-800 border-rose-200' },
+const RECOMMENDATIONS = {
+  advance: { label: 'Advance', tone: 'success' },
+  further_review: { label: 'Further review', tone: 'warning' },
+  do_not_advance: { label: 'Do not advance', tone: 'danger' },
 };
 
 export function RecommendationBadge({ recommendation }) {
-  const style = RECOMMENDATION_STYLES[recommendation];
-  if (!style) return null;
+  const rec = RECOMMENDATIONS[recommendation];
+  if (!rec) return null;
   return (
-    <span className={`inline-block border rounded-full px-2.5 py-0.5 text-xs font-medium ${style.className}`}>
-      {style.label}
-    </span>
+    <Badge tone={rec.tone}>
+      <span className="sr-only">AI recommendation: </span>
+      {rec.label}
+    </Badge>
   );
 }
 
+// Visual 1–5 meter; the numeric score is always shown next to it, so the
+// dots themselves are hidden from assistive tech.
 function ScoreDots({ score }) {
   return (
-    <span className="inline-flex gap-1" aria-label={`${score} out of 5`}>
+    <span className="inline-flex gap-1" aria-hidden="true">
       {[1, 2, 3, 4, 5].map((n) => (
-        <span key={n} className={`w-2 h-2 rounded-full ${n <= score ? 'bg-slate-800' : 'bg-slate-200'}`} />
+        <span key={n} className={`h-2 w-2 rounded-full ${n <= score ? 'bg-brand-600' : 'bg-slate-200'}`} />
       ))}
     </span>
   );
 }
 
-function EvidenceList({ title, items, tone }) {
+function EvidenceList({ title, items, accent }) {
   if (!Array.isArray(items) || items.length === 0) return null;
   return (
     <div>
-      <h3 className={`text-sm font-medium mb-2 ${tone}`}>{title}</h3>
-      <ul className="space-y-2">
+      <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
+        <span aria-hidden="true" className={`h-2 w-2 rounded-full ${accent}`} />
+        {title}
+      </h3>
+      <ul className="space-y-3">
         {items.map((item, i) => (
           <li key={i} className="text-sm">
-            <p className="text-slate-800">{item.point}</p>
-            {item.evidence && <p className="text-slate-500 italic mt-0.5">&ldquo;{item.evidence}&rdquo;</p>}
+            <p className="text-slate-900">{item.point}</p>
+            {item.evidence && (
+              <blockquote className="mt-1 border-l-2 border-slate-200 pl-3 italic text-slate-600">
+                &ldquo;{item.evidence}&rdquo;
+              </blockquote>
+            )}
           </li>
         ))}
       </ul>
@@ -49,57 +62,58 @@ export default function FeedbackReport({ evaluation }) {
   const scorecard = Array.isArray(evaluation.scorecard) ? evaluation.scorecard : [];
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
-        <p className="text-3xl font-semibold text-slate-900">
+        <p className="text-4xl font-semibold tracking-tight text-slate-900">
           {evaluation.overallScore}
-          <span className="text-base font-normal text-slate-400">/100</span>
+          <span className="text-base font-normal text-slate-500">/100</span>
         </p>
         <RecommendationBadge recommendation={evaluation.recommendation} />
       </div>
 
-      <p className="text-xs text-slate-500">
-        AI-assisted and advisory only — the hiring decision is made by a person.
-        {evaluation.evaluatedAt && ` Generated ${new Date(evaluation.evaluatedAt).toLocaleString()}`}
-        {evaluation.modelVersion && ` · ${evaluation.modelVersion}`}
-        {evaluation.promptVersion && ` · ${evaluation.promptVersion}`}
-      </p>
-
-      {evaluation.summaryText && <p className="text-slate-700 text-sm">{evaluation.summaryText}</p>}
+      {evaluation.summaryText && <p className="text-sm leading-relaxed text-slate-800">{evaluation.summaryText}</p>}
 
       {(evaluation.strengths?.length > 0 || evaluation.concerns?.length > 0) && (
-        <div className="grid gap-5 sm:grid-cols-2">
-          <EvidenceList title="Strengths" items={evaluation.strengths} tone="text-emerald-800" />
-          <EvidenceList title="Concerns" items={evaluation.concerns} tone="text-rose-800" />
+        <div className="grid gap-6 sm:grid-cols-2">
+          <EvidenceList title="Strengths" items={evaluation.strengths} accent="bg-emerald-500" />
+          <EvidenceList title="Concerns" items={evaluation.concerns} accent="bg-rose-500" />
         </div>
       )}
 
       {scorecard.length > 0 && (
         <div>
-          <h3 className="text-sm font-medium text-slate-800 mb-2">Criteria</h3>
-          <div className="divide-y divide-slate-100 border border-slate-100 rounded-md">
+          <h3 className="mb-2 text-sm font-semibold text-slate-900">Criteria</h3>
+          <ul className="divide-y divide-slate-100 rounded-md border border-slate-200">
             {scorecard.map((row, i) => (
-              <div key={i} className="px-3 py-3 text-sm space-y-1">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-medium text-slate-800">{row.criterion}</span>
-                  <span className="flex items-center gap-2 text-slate-500 shrink-0">
+              <li key={i} className="space-y-1 px-4 py-3 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <span className="font-medium text-slate-900">{row.criterion}</span>
+                  <span className="flex shrink-0 items-center gap-2 text-slate-700">
                     <ScoreDots score={row.score} />
-                    {row.score}/5
+                    <span className="tabular-nums">
+                      {row.score}/5<span className="sr-only"> for {row.criterion}</span>
+                    </span>
                   </span>
                 </div>
-                {row.evidence && <p className="text-slate-600">{row.evidence}</p>}
-                {row.notes && <p className="text-slate-500">{row.notes}</p>}
+                {row.evidence && <p className="text-slate-700">{row.evidence}</p>}
+                {row.notes && <p className="text-slate-600">{row.notes}</p>}
                 {Array.isArray(row.questionNumbers) && row.questionNumbers.length > 0 && (
-                  <p className="text-xs text-slate-400">
+                  <p className="text-xs text-slate-500">
                     From {row.questionNumbers.length === 1 ? 'question' : 'questions'}{' '}
                     {row.questionNumbers.map((n) => `Q${n}`).join(', ')}
                   </p>
                 )}
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
         </div>
       )}
+
+      <p className="border-t border-slate-100 pt-3 text-xs text-slate-500">
+        {evaluation.evaluatedAt && `Generated ${formatDateTime(evaluation.evaluatedAt)}`}
+        {evaluation.modelVersion && ` · ${evaluation.modelVersion}`}
+        {evaluation.promptVersion && ` · ${evaluation.promptVersion}`}
+      </p>
     </div>
   );
 }

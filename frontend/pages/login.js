@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '../components/Layout';
+import { Button, Field, FormError } from '../components/ui';
 import { api, ApiError } from '../lib/api';
 
 export default function LoginPage() {
@@ -10,6 +11,13 @@ export default function LoginPage() {
   const [code, setCode] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const headingRef = useRef(null);
+
+  // Move focus to the heading when the step changes so screen-reader users
+  // hear the new instructions.
+  useEffect(() => {
+    if (step === 'code' && headingRef.current) headingRef.current.focus();
+  }, [step]);
 
   const handleRequestOtp = async (e) => {
     e.preventDefault();
@@ -34,92 +42,74 @@ export default function LoginPage() {
       router.push('/dashboard');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not verify code.');
-    } finally {
       setSubmitting(false);
     }
   };
 
   return (
-    <Layout>
-      <div className="max-w-sm mx-auto">
-        <h1 className="text-2xl font-semibold mb-1">Reviewer login</h1>
-        <p className="text-slate-500 mb-6">
-          {step === 'email'
-            ? "We'll email you a one-time login code."
-            : `Enter the code sent to ${email}.`}
+    <Layout variant="reviewer" title="Reviewer login" width="narrow">
+      <div className="card p-6 sm:p-8">
+        <h1 ref={headingRef} tabIndex={-1} className="text-xl font-semibold tracking-tight focus:outline-none">
+          {step === 'email' ? 'Reviewer login' : 'Check your email'}
+        </h1>
+        <p className="mt-1 mb-6 text-sm text-slate-600">
+          {step === 'email' ? (
+            "We'll email you a one-time login code. No password needed."
+          ) : (
+            <>
+              Enter the code we sent to <span className="font-medium text-slate-900">{email}</span>.
+            </>
+          )}
         </p>
 
         {step === 'email' ? (
           <form onSubmit={handleRequestOtp} className="space-y-4">
-            <label className="block text-sm">
-              <span className="text-slate-700 font-medium">Work email</span>
+            <Field label="Work email" required>
               <input
                 type="email"
-                required
+                autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="input mt-1"
+                className="input"
               />
-            </label>
-            {error && <p className="text-sm text-red-600">{error}</p>}
-            <button
-              type="submit"
-              disabled={submitting || !email.trim()}
-              className="w-full bg-slate-900 text-white rounded-md py-2.5 font-medium disabled:opacity-40 hover:bg-slate-800"
-            >
-              {submitting ? 'Sending…' : 'Send login code'}
-            </button>
+            </Field>
+            <FormError>{error}</FormError>
+            <Button type="submit" block loading={submitting} loadingText="Sending…" disabled={!email.trim()}>
+              Send login code
+            </Button>
           </form>
         ) : (
           <form onSubmit={handleVerifyOtp} className="space-y-4">
-            <label className="block text-sm">
-              <span className="text-slate-700 font-medium">Login code</span>
+            <Field label="Login code" hint="The code expires after a few minutes." required>
               <input
                 type="text"
                 inputMode="numeric"
-                required
+                autoComplete="one-time-code"
+                pattern="[0-9]*"
+                maxLength={6}
                 value={code}
-                onChange={(e) => setCode(e.target.value)}
-                className="input mt-1"
-                autoFocus
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+                className="input text-center font-mono text-lg tracking-[0.5em]"
               />
-            </label>
-            {error && <p className="text-sm text-red-600">{error}</p>}
-            <button
-              type="submit"
-              disabled={submitting || !code.trim()}
-              className="w-full bg-slate-900 text-white rounded-md py-2.5 font-medium disabled:opacity-40 hover:bg-slate-800"
-            >
-              {submitting ? 'Verifying…' : 'Verify & sign in'}
-            </button>
-            <button
-              type="button"
+            </Field>
+            <FormError>{error}</FormError>
+            <Button type="submit" block loading={submitting} loadingText="Verifying…" disabled={!code.trim()}>
+              Verify &amp; sign in
+            </Button>
+            <Button
+              variant="ghost"
+              block
               onClick={() => {
                 setStep('email');
                 setCode('');
                 setError(null);
               }}
-              className="w-full text-sm text-slate-500 hover:text-slate-800"
             >
               Use a different email
-            </button>
+            </Button>
           </form>
         )}
       </div>
-
-      <style jsx global>{`
-        .input {
-          width: 100%;
-          border: 1px solid #cbd5e1;
-          border-radius: 0.375rem;
-          padding: 0.5rem 0.75rem;
-          font-size: 0.875rem;
-        }
-        .input:focus {
-          outline: 2px solid #0f172a;
-          outline-offset: 1px;
-        }
-      `}</style>
     </Layout>
   );
 }

@@ -1,9 +1,23 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '../../components/Layout';
 import VoiceControls from '../../components/VoiceControls';
 import DataErasure from '../../components/DataErasure';
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CharacterCount,
+  ChoiceCards,
+  Field,
+  FormError,
+  Icon,
+  LoadingState,
+} from '../../components/ui';
 import { api, ApiError } from '../../lib/api';
+import { formatDate, formatFileSize } from '../../lib/format';
+import { validateDocumentFile } from '../../lib/files';
 import useProctoring from '../../lib/useProctoring';
 
 // v2 (Phase 7): adds tab/fullscreen monitoring, the retention period, and
@@ -12,6 +26,9 @@ const CONSENT_TEXT_VERSION = 'v2';
 // The server sends its configured value (DATA_RETENTION_DAYS); this is only
 // a fallback.
 const DEFAULT_RETENTION_DAYS = 180;
+const MAX_REVIEW_REASON_LENGTH = 2000;
+
+const STEPS = ['Consent', 'Resume', 'Interview', 'Done'];
 
 // The entire candidate flow (consent -> mandatory resume upload -> AI/manual
 // interview -> completion) lives on this one token-addressed page — the
@@ -25,12 +42,15 @@ export default function InvitePage() {
   const [session, setSession] = useState(null);
   const [error, setError] = useState(null);
 
+  // Only the first load shows the full-page spinner. Later refreshes (after
+  // each answer, consent, upload) swap data in place so focus, the draft
+  // area and the proctoring listeners aren't torn down between questions.
   const load = useCallback(async (t) => {
-    setLoading(true);
     try {
       const data = await api.getSession(t);
       setSession(data);
       setNotFound(false);
+      setError(null);
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) {
         setNotFound(true);
@@ -46,181 +66,109 @@ export default function InvitePage() {
     if (token) load(token);
   }, [token, load]);
 
+  const refresh = useCallback(() => load(token), [load, token]);
+
   if (loading) {
     return (
-      <Layout>
-        <p className="text-slate-500">Loading…</p>
+      <Layout title="Your interview">
+        <LoadingState label="Loading your interview…" />
       </Layout>
     );
   }
 
   if (notFound) {
     return (
-      <Layout>
-        <p className="text-red-600">This invite link is invalid or has expired.</p>
-      </Layout>
+      <Notice title="This link isn't valid" pageTitle="Invalid link">
+        This invite link is invalid or has expired. Check that you used the full link from your email, or
+        contact the hiring team for a new one.
+      </Notice>
     );
   }
 
   if (error && !session) {
     return (
-      <Layout>
-        <p className="text-red-600">{error}</p>
+      <Layout title="Your interview">
+        <Alert tone="error" title="We couldn't load your interview">
+          <p>{error}</p>
+          <Button variant="secondary" size="sm" className="mt-3" onClick={refresh}>
+            Try again
+          </Button>
+        </Alert>
       </Layout>
     );
   }
 
   if (session.anonymized) {
     return (
-      <Layout>
-        <div className="bg-white border border-slate-200 rounded-lg p-8 text-center">
-          <h1 className="text-xl font-semibold text-slate-800 mb-2">Your data has been deleted</h1>
-          <p className="text-slate-500">
-            The personal data from your application for {session.roleName} has been removed, either at
-            your request or because our retention period ended. There is nothing further to do.
-          </p>
-        </div>
-      </Layout>
+      <Notice title="Your data has been deleted" pageTitle="Data deleted">
+        The personal data from your application for {session.roleName} has been removed, either at your
+        request or because our retention period ended. There is nothing further to do.
+      </Notice>
     );
-  }
-  if (session.status === 'INVITED') {
-    return <ConsentStep token={token} session={session} onStarted={() => load(token)} />;
-  }
-  if (session.status === 'IN_PROGRESS' && !session.resumeUploaded) {
-    return <ResumeUploadStep token={token} onUploaded={() => load(token)} />;
-  }
-  if (session.status === 'IN_PROGRESS') {
-    return <InterviewStep token={token} session={session} onComplete={() => load(token)} />;
   }
   if (session.status === 'CANCELLED') {
     return (
-      <Layout>
-        <p className="text-slate-500">This interview has been cancelled.</p>
-      </Layout>
+      <Notice title="Interview cancelled" pageTitle="Interview cancelled">
+        This interview has been cancelled. If you think this is a mistake, contact the hiring team.
+      </Notice>
     );
   }
-  return <CompleteStep token={token} session={session} onChange={() => load(token)} />;
+  if (session.status === 'INVITED') {
+    return <ConsentStep token={token} session={session} onStarted={refresh} />;
+  }
+  if (session.status === 'IN_PROGRESS' && !session.resumeUploaded) {
+    return <ResumeUploadStep token={token} session={session} onUploaded={refresh} />;
+  }
+  if (session.status === 'IN_PROGRESS') {
+    return <InterviewStep token={token} session={session} onChange={refresh} />;
+  }
+  return <CompleteStep token={token} session={session} onChange={refresh} />;
 }
 
-const MAX_REVIEW_REASON_LENGTH = 2000;
-
-// Phase 6 / DPDP human-review path, candidate side. The candidate sees only
-// their own request, its status, and the reviewer's reply — never scores,
-// the AI recommendation, or internal reviewer notes.
-function CompleteStep({ token, session, onChange }) {
-  const [showForm, setShowForm] = useState(false);
-  const [reason, setReason] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState(null);
-
-  const reviewRequests = session.reviewRequests || [];
-  const hasOpen = reviewRequests.some((r) => r.status === 'OPEN');
-  const canRequest = session.status === 'COMPLETED' && !hasOpen;
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setSubmitting(true);
-    setError(null);
-    try {
-      await api.requestHumanReview(token, reason);
-      setShowForm(false);
-      setReason('');
-      await onChange();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not submit your request. Please try again.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
+function Notice({ title, pageTitle, children }) {
   return (
-    <Layout>
-      <div className="bg-white border border-slate-200 rounded-lg p-8 text-center">
-        <h1 className="text-xl font-semibold text-slate-800 mb-2">Interview complete</h1>
-        <p className="text-slate-500">
-          Thank you for completing your interview, {session.candidateName}. Your responses have
-          been recorded and will be reviewed by the hiring team.
-        </p>
+    <Layout title={pageTitle}>
+      <div className="card px-6 py-10 text-center">
+        <h1 className="text-xl font-semibold text-slate-900">{title}</h1>
+        <p className="mx-auto mt-2 max-w-prose text-slate-600">{children}</p>
       </div>
-
-      <div className="bg-white border border-slate-200 rounded-lg p-6 mt-6">
-        <h2 className="font-medium text-slate-800 mb-2">Request a human review</h2>
-        <p className="text-sm text-slate-500">
-          Your interview is assessed with the help of AI, and a person on the hiring team makes the
-          final decision. If you think something was missed or misunderstood, you can ask a person to
-          review the assessment. Their reply will appear on this page.
-        </p>
-
-        {reviewRequests.length > 0 && (
-          <ul className="mt-4 space-y-3">
-            {reviewRequests.map((r) => (
-              <li key={r.id} className="border border-slate-200 rounded-md p-4 text-sm">
-                <div className="flex flex-wrap justify-between gap-2">
-                  <span className="font-medium text-slate-800">
-                    {r.status === 'OPEN' ? 'In review' : 'Reviewed'}
-                  </span>
-                  <span className="text-slate-500">
-                    Requested {new Date(r.requestedAt).toLocaleDateString()}
-                  </span>
-                </div>
-                <p className="text-slate-600 mt-2 whitespace-pre-wrap">{r.reason}</p>
-                {r.candidateResponse && (
-                  <div className="mt-3 border-t border-slate-100 pt-3">
-                    <p className="text-slate-500 text-xs mb-1">Response from the hiring team</p>
-                    <p className="text-slate-800 whitespace-pre-wrap">{r.candidateResponse}</p>
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {canRequest && !showForm && (
-          <button
-            onClick={() => setShowForm(true)}
-            className="mt-4 border border-slate-300 rounded-md px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
-          >
-            {reviewRequests.length > 0 ? 'Request another review' : 'Request a human review'}
-          </button>
-        )}
-
-        {canRequest && showForm && (
-          <form onSubmit={handleSubmit} className="mt-4 space-y-3">
-            <label className="block text-sm">
-              <span className="text-slate-700">What would you like the reviewer to look at?</span>
-              <textarea
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                rows={4}
-                maxLength={MAX_REVIEW_REASON_LENGTH}
-                className="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
-              />
-            </label>
-            {error && <p className="text-sm text-red-600">{error}</p>}
-            <div className="flex gap-3">
-              <button
-                type="submit"
-                disabled={!reason.trim() || submitting}
-                className="bg-slate-900 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-40 hover:bg-slate-800"
-              >
-                {submitting ? 'Submitting…' : 'Submit request'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowForm(false)}
-                className="text-sm text-slate-500 hover:text-slate-800"
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        )}
-      </div>
-      <DataErasure token={token} inProgress={false} onErased={onChange} />
     </Layout>
   );
 }
 
+function StepIndicator({ current }) {
+  return (
+    <nav aria-label="Interview progress" className="mb-8">
+      <ol className="flex items-center gap-2 text-xs sm:text-sm">
+        {STEPS.map((label, i) => {
+          const state = i < current ? 'done' : i === current ? 'current' : 'todo';
+          return (
+            <li key={label} className="flex flex-1 items-center gap-2" aria-current={state === 'current' ? 'step' : undefined}>
+              <span
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                  state === 'done'
+                    ? 'bg-brand-600 text-white'
+                    : state === 'current'
+                      ? 'border-2 border-brand-600 bg-white text-brand-700'
+                      : 'border border-slate-300 bg-white text-slate-500'
+                }`}
+              >
+                {state === 'done' ? <Icon name="check" className="h-3.5 w-3.5" /> : i + 1}
+              </span>
+              <span className={state === 'todo' ? 'text-slate-500' : 'font-medium text-slate-900'}>
+                {label}
+                {state === 'done' && <span className="sr-only"> (completed)</span>}
+              </span>
+              {i < STEPS.length - 1 && <span aria-hidden="true" className="hidden h-px flex-1 bg-slate-200 sm:block" />}
+            </li>
+          );
+        })}
+      </ol>
+    </nav>
+  );
+}
+
+// ----------------------------------------------------------- 1. consent ---
 function ConsentStep({ token, session, onStarted }) {
   const [mode, setMode] = useState('TEXT');
   const [consentAccepted, setConsentAccepted] = useState(false);
@@ -228,7 +176,8 @@ function ConsentStep({ token, session, onStarted }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
-  const canSubmit = consentAccepted && (mode !== 'VOICE' || voiceConsentAccepted) && !submitting;
+  const needsVoiceConsent = mode === 'VOICE';
+  const canSubmit = consentAccepted && (!needsVoiceConsent || voiceConsentAccepted) && !submitting;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -254,7 +203,7 @@ function ConsentStep({ token, session, onStarted }) {
       }
 
       await api.startSession(token, { consentRecordId: consentRecord.id, mode });
-      onStarted();
+      await onStarted();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Something went wrong. Please try again.');
       setSubmitting(false);
@@ -262,119 +211,141 @@ function ConsentStep({ token, session, onStarted }) {
   };
 
   return (
-    <Layout>
-      <h1 className="text-2xl font-semibold mb-1">
-        Hi {session.candidateName}, let&apos;s get started
-      </h1>
-      <p className="text-slate-500 mb-6">
-        You&apos;re interviewing for: <span className="font-medium">{session.roleName}</span>
+    <Layout title="Before you start">
+      <StepIndicator current={0} />
+      <h1 className="text-2xl font-semibold tracking-tight">Hi {session.candidateName}, let&apos;s get started</h1>
+      <p className="mt-1 mb-6 text-slate-600">
+        You&apos;re interviewing for <span className="font-medium text-slate-900">{session.roleName}</span>. It
+        takes a few minutes to set up.
       </p>
 
       <form onSubmit={handleSubmit} className="space-y-6">
-        <section className="bg-white border border-slate-200 rounded-lg p-5">
-          <h2 className="font-medium text-slate-800 mb-2">How would you like to interview?</h2>
-          <div className="flex gap-3">
-            <ModeOption
-              label="Text"
-              description="Type your answers"
-              selected={mode === 'TEXT'}
-              onClick={() => setMode('TEXT')}
-            />
-            <ModeOption
-              label="Voice"
-              description="Speak your answers, questions read aloud"
-              selected={mode === 'VOICE'}
-              onClick={() => setMode('VOICE')}
-            />
-          </div>
-        </section>
+        <Card title="How would you like to interview?">
+          <ChoiceCards
+            legend="Interview mode"
+            hideLegend
+            name="mode"
+            value={mode}
+            onChange={setMode}
+            options={[
+              { value: 'TEXT', label: 'Text', description: 'Read each question and type your answer.' },
+              {
+                value: 'VOICE',
+                label: 'Voice',
+                description: 'Questions can be read aloud; speak your answer and check the transcript before sending.',
+              },
+            ]}
+          />
+        </Card>
 
-        <section className="bg-white border border-slate-200 rounded-lg p-5">
-          <h2 className="font-medium text-slate-800 mb-2">Consent to data processing</h2>
-          <div className="text-sm text-slate-600 space-y-2 max-h-40 overflow-y-auto border border-slate-100 rounded p-3 bg-slate-50">
+        <Card title="Consent to data processing" description="Please read this before continuing.">
+          <ConsentText label="Data processing consent text">
             <p>
-              Under India&apos;s Digital Personal Data Protection Act, 2023, we need your explicit
-              consent before processing your personal data (name, contact details, resume, and
-              interview responses) for this AI-driven interview and evaluation.
+              Under India&apos;s Digital Personal Data Protection Act, 2023, we need your explicit consent before
+              processing your personal data (name, contact details, resume, and interview responses) for this
+              AI-driven interview and evaluation.
             </p>
             <p>
-              Your resume will be sent to our AI provider along with the job description to
-              generate interview questions and a resume-fit score. Your answers will be recorded
-              and sent to our AI provider to produce a structured evaluation for the hiring team.
-              This data is used only for this recruitment process. It is kept for{' '}
-              {session.retentionDays || DEFAULT_RETENTION_DAYS} days
-              after your interview is completed and then anonymized.
+              Your resume will be sent to our AI provider along with the job description to generate interview
+              questions and a resume-fit score. Your answers will be recorded and sent to our AI provider to produce
+              a structured evaluation for the hiring team. This data is used only for this recruitment process. It
+              is kept for {session.retentionDays || DEFAULT_RETENTION_DAYS} days after your interview is completed
+              and then anonymized.
             </p>
             <p>
-              During the interview we note when you switch away from the interview tab or leave
-              fullscreen (only that it happened and when, nothing on your screen). The hiring team
-              sees this as context; it is not used by the AI evaluation.
+              During the interview we note when you switch away from the interview tab or leave fullscreen (only
+              that it happened and when, nothing on your screen). The hiring team sees this as context; it is not
+              used by the AI evaluation.
             </p>
             <p>
-              You may withdraw consent and have your data deleted at any time using the link at the
-              bottom of each page after this one. You may also request human review of an
-              AI-generated evaluation.
+              You may withdraw consent and have your data deleted at any time using the link at the bottom of each
+              page after this one. You may also request human review of an AI-generated evaluation.
             </p>
-          </div>
-          <label className="flex items-start gap-2 mt-3 text-sm">
-            <input
-              type="checkbox"
-              checked={consentAccepted}
-              onChange={(e) => setConsentAccepted(e.target.checked)}
-              className="mt-1"
-            />
-            <span>
-              I have read and understood the above, and I consent to my personal data being
-              processed as described (consent version {CONSENT_TEXT_VERSION}).
-            </span>
-          </label>
-        </section>
+          </ConsentText>
+          <ConsentCheckbox checked={consentAccepted} onChange={setConsentAccepted}>
+            I have read and understood the above, and I consent to my personal data being processed as described
+            (consent version {CONSENT_TEXT_VERSION}).
+          </ConsentCheckbox>
+        </Card>
 
-        {mode === 'VOICE' && (
-          <section className="bg-white border border-slate-200 rounded-lg p-5">
-            <h2 className="font-medium text-slate-800 mb-2">Consent to voice recording</h2>
-            <div className="text-sm text-slate-600 space-y-2 max-h-40 overflow-y-auto border border-slate-100 rounded p-3 bg-slate-50">
+        {needsVoiceConsent && (
+          <Card title="Consent to voice recording" description="Needed only because you chose a voice interview.">
+            <ConsentText label="Voice recording consent text">
               <p>
-                Voice interviews additionally require your consent to your spoken answers being
-                recorded and sent to our speech-to-text provider to convert them into a written
-                transcript, and to interview questions being sent to a text-to-speech provider so
-                they can be read aloud to you. The audio itself is not stored — only the resulting
-                text transcript is kept, for the same evaluation purpose described above.
+                Voice interviews additionally require your consent to your spoken answers being recorded and sent to
+                our speech-to-text provider to convert them into a written transcript, and to interview questions
+                being sent to a text-to-speech provider so they can be read aloud to you. The audio itself is not
+                stored — only the resulting text transcript is kept, for the same evaluation purpose described
+                above.
               </p>
-            </div>
-            <label className="flex items-start gap-2 mt-3 text-sm">
-              <input
-                type="checkbox"
-                checked={voiceConsentAccepted}
-                onChange={(e) => setVoiceConsentAccepted(e.target.checked)}
-                className="mt-1"
-              />
-              <span>
-                I consent to my spoken answers being processed by a voice AI provider as described
-                (consent version {CONSENT_TEXT_VERSION}).
-              </span>
-            </label>
-          </section>
+            </ConsentText>
+            <ConsentCheckbox checked={voiceConsentAccepted} onChange={setVoiceConsentAccepted}>
+              I consent to my spoken answers being processed by a voice AI provider as described (consent version{' '}
+              {CONSENT_TEXT_VERSION}).
+            </ConsentCheckbox>
+          </Card>
         )}
 
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        <FormError>{error}</FormError>
 
-        <button
-          type="submit"
-          disabled={!canSubmit}
-          className="w-full bg-slate-900 text-white rounded-md py-2.5 font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-800"
-        >
-          {submitting ? 'Starting…' : 'Accept & continue'}
-        </button>
+        <div>
+          <Button type="submit" block loading={submitting} loadingText="Starting…" disabled={!canSubmit}>
+            Accept &amp; continue
+          </Button>
+          {!canSubmit && !submitting && (
+            <p className="hint mt-2 text-center">
+              {needsVoiceConsent ? 'Tick both consent boxes to continue.' : 'Tick the consent box to continue.'}
+            </p>
+          )}
+        </div>
       </form>
     </Layout>
   );
 }
 
-function ResumeUploadStep({ token, onUploaded }) {
+// Scrollable legal text. Focusable + labelled so keyboard users can scroll
+// it (axe: scrollable-region-focusable).
+function ConsentText({ label, children }) {
+  return (
+    <div
+      role="region"
+      aria-label={label}
+      tabIndex={0}
+      className="max-h-56 space-y-3 overflow-y-auto rounded-md border border-slate-200 bg-slate-50 p-4 text-sm leading-relaxed text-slate-700"
+    >
+      {children}
+    </div>
+  );
+}
+
+function ConsentCheckbox({ checked, onChange, children }) {
+  return (
+    <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-md p-1 text-sm text-slate-800">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 h-4 w-4 shrink-0"
+      />
+      <span>{children}</span>
+    </label>
+  );
+}
+
+// ------------------------------------------------------------ 2. resume ---
+function ResumeUploadStep({ token, session, onUploaded }) {
   const [file, setFile] = useState(null);
+  const [fileError, setFileError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+
+  const handleFile = (e) => {
+    const chosen = e.target.files[0] || null;
+    const problem = validateDocumentFile(chosen);
+    setFileError(problem);
+    setFile(problem ? null : chosen);
+    setError(null);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -384,7 +355,7 @@ function ResumeUploadStep({ token, onUploaded }) {
     setError(null);
     try {
       await api.uploadResume(token, file);
-      onUploaded();
+      await onUploaded();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not process your resume.');
       setSubmitting(false);
@@ -392,116 +363,163 @@ function ResumeUploadStep({ token, onUploaded }) {
   };
 
   return (
-    <Layout>
-      <h1 className="text-2xl font-semibold mb-1">Upload your resume</h1>
-      <p className="text-slate-500 mb-6">
-        We use your resume, together with the job description, to generate your interview
-        questions and a resume-fit assessment. PDF or DOCX only.
+    <Layout title="Upload your resume">
+      <StepIndicator current={1} />
+      <h1 className="text-2xl font-semibold tracking-tight">Upload your resume</h1>
+      <p className="mt-1 mb-6 text-slate-600">
+        We use your resume, together with the job description for{' '}
+        <span className="font-medium text-slate-900">{session.roleName}</span>, to prepare your interview
+        questions and a resume-fit assessment.
       </p>
 
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <input
-          type="file"
-          accept=".pdf,.docx"
-          required
-          onChange={(e) => setFile(e.target.files[0] || null)}
-          className="block w-full text-sm border border-slate-300 rounded-md p-2"
-        />
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        <button
-          type="submit"
-          disabled={!file || submitting}
-          className="w-full bg-slate-900 text-white rounded-md py-2.5 font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-800"
-        >
-          {submitting ? 'Preparing your interview…' : 'Upload & continue'}
-        </button>
-      </form>
+      <Card>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <Field label="Resume" hint="PDF or DOCX, up to 15 MB." error={fileError} required>
+            <input type="file" accept=".pdf,.docx" onChange={handleFile} className="file-input" disabled={submitting} />
+          </Field>
+          {file && (
+            <p className="flex items-center gap-2 text-sm text-slate-700">
+              <Icon name="file" className="h-4 w-4 text-slate-500" />
+              <span className="truncate">{file.name}</span>
+              <span className="text-slate-500">({formatFileSize(file.size)})</span>
+            </p>
+          )}
+          <FormError>{error}</FormError>
+          <Button type="submit" block loading={submitting} loadingText="Preparing your interview…" disabled={!file}>
+            Upload &amp; continue
+          </Button>
+          {submitting && (
+            <p className="hint text-center" role="status">
+              This can take up to a minute while your questions are prepared. Please keep this page open.
+            </p>
+          )}
+        </form>
+      </Card>
       <DataErasure token={token} inProgress onErased={onUploaded} />
     </Layout>
   );
 }
 
-function InterviewStep({ token, session, onComplete }) {
+// --------------------------------------------------------- 3. interview ---
+function InterviewStep({ token, session, onChange }) {
   const [answer, setAnswer] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const proctoring = useProctoring(token);
+  const questionRef = useRef(null);
 
   const transcript = session.transcript || [];
   const unanswered = transcript.find((t) => !t.responseText);
   const answeredCount = transcript.filter((t) => t.responseText).length;
   const totalQuestions = transcript.length;
+  const questionId = unanswered && unanswered.questionId;
+
+  // New question: move focus to it so it's read out, and clear any error.
+  useEffect(() => {
+    if (questionId && questionRef.current) questionRef.current.focus();
+    setError(null);
+  }, [questionId]);
+
+  // Don't silently lose a typed answer on refresh/close.
+  useEffect(() => {
+    if (!answer.trim()) return undefined;
+    const warn = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [answer]);
 
   if (!unanswered) {
     return (
-      <Layout>
-        <p className="text-slate-500">No question available for this interview.</p>
-      </Layout>
+      <Notice title="No question available" pageTitle="Interview">
+        There is no question available for this interview right now. Please refresh the page, or contact the
+        hiring team if this keeps happening.
+      </Notice>
     );
   }
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!answer.trim()) return;
-
+  const submit = async () => {
+    if (!answer.trim() || submitting) return;
     setSubmitting(true);
     setError(null);
     try {
-      const result = await api.submitSessionAnswer(token, {
+      await api.submitSessionAnswer(token, {
         questionId: unanswered.questionId,
         responseText: answer.trim(),
       });
       setAnswer('');
-      if (result.done) {
-        onComplete();
-        return;
-      }
-      onComplete();
+      await onChange();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not submit your answer.');
+      setError(err instanceof ApiError ? err.message : 'Could not submit your answer. Your text is still here.');
     } finally {
       setSubmitting(false);
     }
   };
 
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    submit();
+  };
+
+  // Ctrl/Cmd+Enter submits from the textarea.
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      submit();
+    }
+  };
+
+  const progressPct = totalQuestions ? Math.round((answeredCount / totalQuestions) * 100) : 0;
+
   return (
-    <Layout>
-      <div className="mb-4 flex items-center justify-between text-sm text-slate-500">
-        <span>{session.roleName}</span>
-        <span>
+    <Layout title={`Question ${answeredCount + 1} of ${totalQuestions}`}>
+      <StepIndicator current={2} />
+
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">
+        <span className="font-medium text-slate-800">{session.roleName}</span>
+        <span className="flex items-center gap-2">
+          {session.mode === 'VOICE' && <Badge tone="brand">Voice</Badge>}
           Question {answeredCount + 1} of {totalQuestions}
         </span>
       </div>
-
-      <div className="w-full bg-slate-200 rounded-full h-1.5 mb-6">
-        <div
-          className="bg-slate-900 h-1.5 rounded-full transition-all"
-          style={{ width: totalQuestions ? `${(answeredCount / totalQuestions) * 100}%` : '0%' }}
-        />
+      <div
+        role="progressbar"
+        aria-label="Questions answered"
+        aria-valuemin={0}
+        aria-valuemax={totalQuestions}
+        aria-valuenow={answeredCount}
+        aria-valuetext={`${answeredCount} of ${totalQuestions} answered`}
+        className="mb-6 h-1.5 w-full overflow-hidden rounded-full bg-slate-200"
+      >
+        <div className="h-full rounded-full bg-brand-600 transition-all duration-500" style={{ width: `${progressPct}%` }} />
       </div>
 
       {proctoring.lastWarning && (
-        <div className="mb-4 flex items-start justify-between gap-3 bg-amber-50 border border-amber-200 rounded-md px-4 py-3 text-sm text-amber-900">
-          <span>{proctoring.lastWarning}</span>
-          <button onClick={proctoring.dismissWarning} className="text-amber-700 hover:text-amber-900 shrink-0">
-            Dismiss
-          </button>
-        </div>
+        <Alert tone="warning" onDismiss={proctoring.dismissWarning} className="mb-4">
+          {proctoring.lastWarning}
+        </Alert>
       )}
       {proctoring.fullscreenSupported && !proctoring.isFullscreen && (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
-          <span>Please stay on this tab. Fullscreen is recommended.</span>
-          <button
-            onClick={proctoring.enterFullscreen}
-            className="border border-slate-300 rounded-md px-3 py-1.5 text-slate-800 hover:bg-slate-50"
-          >
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+          <span>Please stay on this tab while you answer. Fullscreen is recommended but optional.</span>
+          <Button variant="secondary" size="sm" onClick={proctoring.enterFullscreen}>
             Enter fullscreen
-          </button>
+          </Button>
         </div>
       )}
 
-      <div className="bg-white border border-slate-200 rounded-lg p-6">
-        <h1 className="text-lg font-medium text-slate-800 mb-4">{unanswered.questionText}</h1>
+      <div className="card p-5 sm:p-6">
+        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-brand-700">Question {answeredCount + 1}</p>
+        <h1
+          ref={questionRef}
+          tabIndex={-1}
+          className="mb-5 text-lg font-medium leading-relaxed text-slate-900 focus:outline-none"
+        >
+          {unanswered.questionText}
+        </h1>
+
         {session.mode === 'VOICE' && (
           <VoiceControls
             token={token}
@@ -510,40 +528,148 @@ function InterviewStep({ token, session, onComplete }) {
             disabled={submitting}
           />
         )}
+
         <form onSubmit={handleSubmit} className="space-y-4">
-          <textarea
-            rows={8}
-            value={answer}
-            onChange={(e) => setAnswer(e.target.value)}
-            placeholder="Type your answer here…"
-            className="w-full border border-slate-300 rounded-md p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
-          />
-          {error && <p className="text-sm text-red-600">{error}</p>}
-          <button
-            type="submit"
-            disabled={!answer.trim() || submitting}
-            className="bg-slate-900 text-white rounded-md px-5 py-2.5 font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-800"
+          <Field
+            label="Your answer"
+            hint={
+              session.mode === 'VOICE'
+                ? 'Your recording is transcribed here. Check and edit it before submitting.'
+                : 'Press Ctrl + Enter to submit. You can’t change an answer after submitting.'
+            }
           >
-            {submitting ? 'Submitting…' : 'Submit answer'}
-          </button>
+            <textarea
+              rows={8}
+              value={answer}
+              onChange={(e) => setAnswer(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Type your answer here…"
+              disabled={submitting}
+              className="input leading-relaxed"
+            />
+          </Field>
+          <FormError>{error}</FormError>
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            <Button type="submit" loading={submitting} loadingText="Submitting…" disabled={!answer.trim()}>
+              {answeredCount + 1 === totalQuestions ? 'Submit final answer' : 'Submit answer'}
+            </Button>
+          </div>
         </form>
       </div>
-      <DataErasure token={token} inProgress onErased={onComplete} />
+      <DataErasure token={token} inProgress onErased={onChange} />
     </Layout>
   );
 }
 
-function ModeOption({ label, description, selected, onClick }) {
+// ---------------------------------------------------------- 4. complete ---
+// Phase 6 / DPDP human-review path, candidate side. The candidate sees only
+// their own request, its status, and the reviewer's reply — never scores,
+// the AI recommendation, or internal reviewer notes.
+function CompleteStep({ token, session, onChange }) {
+  const [showForm, setShowForm] = useState(false);
+  const [reason, setReason] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+  const reasonRef = useRef(null);
+
+  // Opening the form is a deliberate click, so move focus into it.
+  useEffect(() => {
+    if (showForm && reasonRef.current) reasonRef.current.focus();
+  }, [showForm]);
+
+  const reviewRequests = session.reviewRequests || [];
+  const hasOpen = reviewRequests.some((r) => r.status === 'OPEN');
+  const canRequest = session.status === 'COMPLETED' && !hasOpen;
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.requestHumanReview(token, reason);
+      setShowForm(false);
+      setReason('');
+      await onChange();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not submit your request. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex-1 text-left border rounded-md p-3 transition-colors ${
-        selected ? 'border-slate-900 bg-slate-50' : 'border-slate-200 hover:border-slate-300'
-      }`}
-    >
-      <p className="text-sm font-medium text-slate-800">{label}</p>
-      <p className="text-xs text-slate-500 mt-0.5">{description}</p>
-    </button>
+    <Layout title="Interview complete">
+      <StepIndicator current={3} />
+      <div className="card px-6 py-10 text-center">
+        <span className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+          <Icon name="check" className="h-6 w-6" />
+        </span>
+        <h1 className="text-xl font-semibold text-slate-900">Interview complete</h1>
+        <p className="mx-auto mt-2 max-w-prose text-slate-600">
+          Thank you, {session.candidateName}. Your responses have been recorded and will be reviewed by the hiring
+          team. You can close this page; the hiring team will contact you about next steps.
+        </p>
+      </div>
+
+      <Card
+        className="mt-6"
+        title="Request a human review"
+        description="Your interview is assessed with the help of AI, and a person on the hiring team makes the final decision. If you think something was missed or misunderstood, you can ask a person to review the assessment. Their reply will appear on this page — keep your invite link to check back."
+      >
+        {reviewRequests.length > 0 && (
+          <ul className="mb-4 space-y-3">
+            {reviewRequests.map((r) => (
+              <li key={r.id} className="rounded-md border border-slate-200 p-4 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Badge tone={r.status === 'OPEN' ? 'warning' : 'success'}>
+                    {r.status === 'OPEN' ? 'In review' : 'Reviewed'}
+                  </Badge>
+                  <span className="text-slate-600">Requested {formatDate(r.requestedAt)}</span>
+                </div>
+                <p className="mt-3 whitespace-pre-wrap text-slate-700">{r.reason}</p>
+                {r.candidateResponse && (
+                  <div className="mt-3 rounded-md bg-slate-50 p-3">
+                    <p className="mb-1 text-xs font-medium text-slate-600">Response from the hiring team</p>
+                    <p className="whitespace-pre-wrap text-slate-900">{r.candidateResponse}</p>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {canRequest && !showForm && (
+          <Button variant="secondary" onClick={() => setShowForm(true)}>
+            {reviewRequests.length > 0 ? 'Request another review' : 'Request a human review'}
+          </Button>
+        )}
+
+        {canRequest && showForm && (
+          <form onSubmit={handleSubmit} className="space-y-3">
+            <Field label="What would you like the reviewer to look at?" required>
+              <textarea
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                rows={5}
+                maxLength={MAX_REVIEW_REASON_LENGTH}
+                ref={reasonRef}
+                className="input"
+              />
+            </Field>
+            <CharacterCount value={reason} max={MAX_REVIEW_REASON_LENGTH} />
+            <FormError>{error}</FormError>
+            <div className="flex flex-wrap gap-3">
+              <Button type="submit" loading={submitting} loadingText="Submitting…" disabled={!reason.trim()}>
+                Submit request
+              </Button>
+              <Button variant="ghost" onClick={() => setShowForm(false)} disabled={submitting}>
+                Cancel
+              </Button>
+            </div>
+          </form>
+        )}
+      </Card>
+      <DataErasure token={token} inProgress={false} onErased={onChange} />
+    </Layout>
   );
 }

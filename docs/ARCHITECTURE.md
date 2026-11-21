@@ -251,3 +251,25 @@ reviewer UI shows the latest.
 - **Login abuse limits:** max 5 OTP requests per org_user per 15 minutes;
   a code locks after 5 wrong guesses (`login_otps.attempts`). All
   configurable via `.env`.
+
+## Frontend UI conventions (Phase 7.5)
+
+- **Shells:** `frontend/components/Layout.js` has a `candidate` variant
+  (brand only + "a person decides" footer; no links into the reviewer
+  side) and a `reviewer` variant (org, credits, user, nav, logout). Every
+  page passes a `title` for `<title>`.
+- **Primitives:** `frontend/components/ui.js` (Button, Field, ChoiceCards,
+  SegmentedControl, Alert/FormError, Card, PageHeader, Badge/StatusBadge,
+  CopyButton/CopyableLink, LoadingState, EmptyState, Icon). Style classes
+  live in `frontend/styles/globals.css` under `@layer components`. The
+  accent colour is the Tailwind `brand` token (`tailwind.config.js`).
+- **Rules of thumb:** wrap every form control in `<Field>` (it wires label,
+  hint and error ids); use `<Alert tone="error">` / `<FormError>` for
+  errors (announced via `role="alert"`); use `ChoiceCards` /
+  `SegmentedControl` for exclusive choices (real radios); format dates
+  with `frontend/lib/format.js`; check uploads with `frontend/lib/files.js`.
+- **Lint:** `cd frontend && npm run lint` runs `next/core-web-vitals` +
+  `plugin:jsx-a11y/recommended` (`frontend/.eslintrc.json`).
+- **Headers:** `frontend/next.config.js` sets Referrer-Policy, framing,
+  nosniff and Permissions-Policy for every route; `pages/_document.js`
+  sets `lang="en"` and `noindex`.

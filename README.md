@@ -61,7 +61,11 @@ npm test
 cd frontend
 npm install
 npm run dev
+npm run lint                # Next.js + jsx-a11y (accessibility) rules
 ```
+
+UI conventions (shared components, accessibility rules, security headers)
+are in `docs/ARCHITECTURE.md` under "Frontend UI conventions".
 
 Copy `.env.example` to `.env` and fill in the required keys before running.
 

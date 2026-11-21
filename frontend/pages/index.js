@@ -1,5 +1,5 @@
-import Link from 'next/link';
 import Layout from '../components/Layout';
+import { ButtonLink } from '../components/ui';
 
 // Phase 4.6: candidates no longer land here to fill in JD/resume text
 // themselves — they arrive via a per-candidate invite link
@@ -8,18 +8,19 @@ import Layout from '../components/Layout';
 // directly. See docs/DECISIONS.md.
 export default function HomePage() {
   return (
-    <Layout>
-      <div className="max-w-md mx-auto text-center py-12">
-        <h1 className="text-2xl font-semibold mb-3">AI Interview Bot</h1>
-        <p className="text-slate-500 mb-6">
-          Candidates: use the invite link sent to you by email to start your interview.
+    <Layout width="narrow">
+      <div className="card px-6 py-10 text-center">
+        <h1 className="text-2xl font-semibold tracking-tight">Welcome</h1>
+        <p className="mt-3 text-slate-600">
+          <span className="font-medium text-slate-800">Candidates:</span> open the personal invite link the
+          hiring team sent you to start your interview. There is no sign-up.
         </p>
-        <Link
-          href="/login"
-          className="inline-block bg-slate-900 text-white rounded-md px-5 py-2.5 font-medium hover:bg-slate-800"
-        >
-          Reviewer / admin login
-        </Link>
+        <div className="mt-8 border-t border-slate-100 pt-6">
+          <p className="mb-3 text-sm text-slate-600">Hiring team member?</p>
+          <ButtonLink href="/login" variant="secondary">
+            Reviewer / admin login
+          </ButtonLink>
+        </div>
       </div>
     </Layout>
   );

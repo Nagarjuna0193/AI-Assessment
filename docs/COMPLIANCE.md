@@ -48,6 +48,9 @@ legal opinion. Have counsel review it before the pilot starts.
       the event type and server time of a tab switch or fullscreen exit:
       no screenshots, keystrokes, camera, or page content. It is shown to
       the reviewer as context and never sent to the AI evaluation.
+- [x] Invite tokens don't leak from the browser (Phase 7.5): the frontend
+      sends `Referrer-Policy: no-referrer`, marks every page `noindex`, and
+      loads no third-party fonts, scripts or analytics.
 - [x] Data retention period defined and enforced (Phase 7). See below.
       Enforcement needs the retention job scheduled on the host, which is
       part of Phase 8 deployment.

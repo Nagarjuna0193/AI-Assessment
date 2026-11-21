@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { api, ApiError } from '../lib/api';
+import { formatDateTime } from '../lib/format';
+import { Alert, Badge, Button, ChoiceCards, Field, FormError } from './ui';
 
 // Phase 6 / DPDP human-review path, reviewer side: shows candidate requests
 // for a person to review the AI-assisted assessment, and lets any org_user
@@ -17,10 +19,11 @@ function ResolveForm({ sessionId, request, onResolved }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
-  const canSubmit = resolutionNotes.trim() && candidateResponse.trim() && !submitting;
+  const canSubmit = resolutionNotes.trim() && candidateResponse.trim();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!canSubmit) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -33,99 +36,89 @@ function ResolveForm({ sessionId, request, onResolved }) {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-3 mt-3">
-      <fieldset className="flex flex-wrap gap-4 text-sm">
-        <legend className="sr-only">Outcome</legend>
-        {Object.entries(OUTCOME_LABELS).map(([value, label]) => (
-          <label key={value} className="flex items-center gap-2">
-            <input
-              type="radio"
-              name={`outcome-${request.id}`}
-              value={value}
-              checked={outcome === value}
-              onChange={() => setOutcome(value)}
-            />
-            {label}
-          </label>
-        ))}
-      </fieldset>
-      <label className="block text-sm">
-        <span className="text-slate-700">Internal notes (not shown to the candidate)</span>
+    <form onSubmit={handleSubmit} className="mt-4 space-y-4 border-t border-amber-200 pt-4">
+      <ChoiceCards
+        legend="Outcome"
+        name={`outcome-${request.id}`}
+        value={outcome}
+        onChange={setOutcome}
+        options={[
+          { value: 'upheld', label: OUTCOME_LABELS.upheld, description: 'The AI-assisted assessment stands.' },
+          { value: 'revised', label: OUTCOME_LABELS.revised, description: 'You reached a different assessment.' },
+        ]}
+      />
+      {outcome === 'revised' && (
+        <Alert tone="info">
+          Recording &ldquo;revised&rdquo; does not change the stored AI evaluation. Note the revised assessment in your
+          internal notes and follow your normal hiring process.
+        </Alert>
+      )}
+      <Field label="Internal notes" hint="Not shown to the candidate. What you checked and why you reached this outcome." required>
         <textarea
           value={resolutionNotes}
           onChange={(e) => setResolutionNotes(e.target.value)}
           rows={3}
-          className="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
-          placeholder="What you checked and why you reached this outcome"
+          className="input"
         />
-      </label>
-      <label className="block text-sm">
-        <span className="text-slate-700">Response to the candidate</span>
+      </Field>
+      <Field label="Response to the candidate" hint="Shown to the candidate on their interview page." required>
         <textarea
           value={candidateResponse}
           onChange={(e) => setCandidateResponse(e.target.value)}
           rows={3}
-          className="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
-          placeholder="Shown to the candidate on their interview page"
+          className="input"
         />
-      </label>
-      {outcome === 'revised' && (
-        <p className="text-xs text-slate-500">
-          Recording &ldquo;revised&rdquo; does not change the stored AI evaluation. Note the revised assessment in
-          your internal notes and follow your normal hiring process.
-        </p>
-      )}
-      {error && <p className="text-sm text-red-600">{error}</p>}
-      <button
-        type="submit"
-        disabled={!canSubmit}
-        className="bg-slate-900 text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-40 hover:bg-slate-800"
-      >
-        {submitting ? 'Saving…' : 'Record outcome'}
-      </button>
+      </Field>
+      <FormError>{error}</FormError>
+      <Button type="submit" loading={submitting} loadingText="Saving…" disabled={!canSubmit}>
+        Record outcome
+      </Button>
     </form>
   );
 }
 
 export default function ReviewRequestsPanel({ sessionId, requests, onChange }) {
   if (!requests || requests.length === 0) {
-    return <p className="text-slate-500 text-sm">The candidate hasn&apos;t requested a human review.</p>;
+    return <p className="text-sm text-slate-600">The candidate hasn&apos;t requested a human review.</p>;
   }
 
   return (
-    <div className="space-y-4">
+    <ul className="space-y-4">
       {requests.map((r) => (
-        <div
+        <li
           key={r.id}
-          className={`border rounded-md p-4 ${r.status === 'OPEN' ? 'border-amber-300 bg-amber-50/40' : 'border-slate-200'}`}
+          className={`rounded-md border p-4 ${r.status === 'OPEN' ? 'border-amber-300 bg-amber-50/50' : 'border-slate-200'}`}
         >
           <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-            <span className="font-medium text-slate-800">
+            <Badge tone={r.status === 'OPEN' ? 'warning' : 'neutral'}>
               {r.status === 'OPEN' ? 'Open request' : CLOSED_LABELS[r.outcome] || 'Resolved'}
-            </span>
-            <span className="text-slate-500">Requested {new Date(r.requestedAt).toLocaleString()}</span>
+            </Badge>
+            <span className="text-slate-600">Requested {formatDateTime(r.requestedAt)}</span>
           </div>
-          <p className="text-sm text-slate-700 mt-2 whitespace-pre-wrap">{r.reason}</p>
+          <p className="mt-1 text-xs font-medium text-slate-600">Candidate&apos;s reason</p>
+          <p className="mt-1 whitespace-pre-wrap text-sm text-slate-800">{r.reason}</p>
           {r.status === 'OPEN' ? (
             <ResolveForm sessionId={sessionId} request={r} onResolved={onChange} />
           ) : (
-            <dl className="mt-3 space-y-2 text-sm">
+            <div className="mt-4 space-y-3 border-t border-slate-100 pt-3 text-sm">
+              <dl className="space-y-3">
               <div>
-                <dt className="text-slate-500">Internal notes</dt>
-                <dd className="text-slate-700 whitespace-pre-wrap">{r.resolutionNotes}</dd>
+                <dt className="text-xs font-medium text-slate-600">Internal notes</dt>
+                <dd className="whitespace-pre-wrap text-slate-800">{r.resolutionNotes}</dd>
               </div>
               <div>
-                <dt className="text-slate-500">Sent to candidate</dt>
-                <dd className="text-slate-700 whitespace-pre-wrap">{r.candidateResponse}</dd>
+                <dt className="text-xs font-medium text-slate-600">Sent to candidate</dt>
+                <dd className="whitespace-pre-wrap text-slate-800">{r.candidateResponse}</dd>
               </div>
-              <div className="text-xs text-slate-400">
+              </dl>
+              <p className="text-xs text-slate-500">
                 Resolved by {r.resolvedBy || 'unknown'}
-                {r.resolvedAt && ` on ${new Date(r.resolvedAt).toLocaleString()}`}
-              </div>
-            </dl>
+                {r.resolvedAt && ` on ${formatDateTime(r.resolvedAt)}`}
+              </p>
+            </div>
           )}
-        </div>
+        </li>
       ))}
-    </div>
+    </ul>
   );
 }
