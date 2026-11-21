@@ -1,6 +1,6 @@
 # TODO / Phase Checklist
 
-Current phase: **Phase 7.5 — frontend UI pass done** (next: Phase 8 pilot deployment)
+Current phase: **Phase 7.6 — conversational interview done** (next: Phase 8 pilot deployment)
 
 See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
 
@@ -288,6 +288,48 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
       (`backend/src/services/mockAiService.js`, refused in production;
       `backend/tests/mockAi.test.js`) — 115/115 backend tests passing
 
+## Phase 7.6 — Conversational (adaptive) interview
+> Requested 2026-11-21: "interview should be conversational instead of
+> question and answer. The AI should analyse the answers during the
+> conversation and build the questions based on that and based on resume
+> and JD". Applies to AI-mode templates; MANUAL templates keep their fixed
+> question set. See `docs/DECISIONS.md` (2026-11-21, Phase 7.6).
+- [x] Resume upload (AI mode) now makes one call that returns the resume
+      score, an interview plan (4-6 topics from JD + resume) and a natural
+      opening question (`interview_plan.v1`); only the opening question is
+      created up front
+- [x] After each answer, one Claude call (`interview_turn.v1`, effort
+      `low`, JD/resume/plan prompt-cached) reads the conversation so far and
+      chooses a follow-up, a new topic, or the end, with a neutral
+      acknowledgement and a reviewer-only "why asked" rationale
+- [x] Server-side guard rails (`backend/src/services/conversationService.js`):
+      5-10 questions, max 2 follow-ups in a row, no early end; AI failure or
+      invalid output falls back to the next planned topic so a candidate is
+      never stuck; every override audit-logged (`interview_turn_overridden`)
+- [x] Migration `20261121000000_conversational_interview`:
+      `candidate_sessions.interview_plan`, `questions.lead_in/kind/topic/rationale`;
+      anonymization clears all of them
+- [x] `POST /api/sessions/:token/next-question` recovery endpoint (server
+      restarted between saving an answer and writing the next question)
+- [x] Candidate UI: chat-style conversation, answer shown immediately with a
+      "reading your answer" indicator, expected question range instead of a
+      fixed total; TTS reads the lead-in + question
+- [x] Reviewer UI: question kind badges (opening / follow-up / new topic /
+      fallback), topic, "why asked" rationale, interview plan card
+- [x] Consent text v3: says answers are sent to the AI during the interview
+      to choose follow-ups (new processing purpose under DPDP)
+- [x] Evaluation prompt `evaluation.v3`: follow-ups are not negative evidence
+- [x] AI_MOCK_MODE: mock plan + turns (short answer -> quoted follow-up)
+- [x] Tests: 128/128 (`tests/conversation.test.js`, conversational cases in
+      `tests/sessions.test.js`); jest now pins `AI_MOCK_MODE=false`
+      (`tests/setupEnv.js`) so a local `.env` can't change test results.
+      End-to-end run against the local API in mock mode: plan -> follow-up
+      -> new topics -> end, audit entries present, no rationale in the
+      candidate view
+- [ ] Not verified against the real Claude API (no key in this
+      environment) — prompt quality and per-turn latency need a check with a
+      real key before the pilot (Phase 8)
+
 ## Phase 8 — Pilot deployment
 - [ ] Deploy to Railway/Render
 - [ ] Schedule `npm run retention` daily (host cron)
@@ -323,5 +365,12 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
   only `frame-ancestors` is set; a strict CSP needs nonce support for
   Next.js inline scripts and should be tested on the real host (Phase 8)
 - Dark mode for the UI — not requested
+- Streaming the next interview question token-by-token (would cut perceived
+  wait between answers; measure real per-turn latency first)
+- Conversational mode for MANUAL templates (e.g. AI follow-ups on fixed
+  questions) — MANUAL promises every candidate the same questions, so not
+  done without a product decision
+- Per-template limits for the conversational interview (min/max questions
+  are global constants in `conversationService.LIMITS`)
 - Per-client branding (logo/colour) — the `brand` Tailwind token is the
   hook, but there's no per-org theming

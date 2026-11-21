@@ -71,7 +71,7 @@ describe('retentionService.anonymizeSession', () => {
     });
     expect(prisma.question.updateMany).toHaveBeenCalledWith({
       where: { sessionId: 'sess_1' },
-      data: { questionText: '[removed]' },
+      data: { questionText: '[removed]', leadIn: null, rationale: null, topic: null },
     });
     const evalUpdate = prisma.evaluation.update.mock.calls[0][0];
     expect(evalUpdate.data.scorecard).toEqual([{ criterion: 'Node.js', score: 4 }]);

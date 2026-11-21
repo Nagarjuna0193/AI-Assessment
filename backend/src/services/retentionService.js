@@ -57,8 +57,12 @@ async function anonymizeSession(sessionId, { actorType, actorId = null, reason }
       where: { sessionId },
       data: { responseText: REMOVED, responseAudioUrl: null },
     }),
-    // AI-generated questions are personalized from the resume.
-    prisma.question.updateMany({ where: { sessionId }, data: { questionText: REMOVED } }),
+    // AI-generated questions are personalized from the resume; conversational
+    // lead-ins and rationales can paraphrase the candidate's answers.
+    prisma.question.updateMany({
+      where: { sessionId },
+      data: { questionText: REMOVED, leadIn: null, rationale: null, topic: null },
+    }),
     ...session.evaluations.map((e) =>
       prisma.evaluation.update({
         where: { id: e.id },
@@ -88,6 +92,7 @@ async function anonymizeSession(sessionId, { actorType, actorId = null, reason }
         resumeText: null,
         resumeFileRef: null,
         resumeJdRationale: null,
+        interviewPlan: Prisma.DbNull,
         anonymizedAt: now,
         ...(session.status === 'INVITED' || session.status === 'IN_PROGRESS' ? { status: 'CANCELLED' } : {}),
       },

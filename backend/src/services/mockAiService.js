@@ -26,6 +26,70 @@ function generateSessionQuestionsAndScore(questionMode, promptVersions) {
   };
 }
 
+const MOCK_TOPICS = [
+  { topic: 'Relevant experience', starterQuestion: GENERIC_QUESTIONS[0] },
+  { topic: 'Problem solving', starterQuestion: GENERIC_QUESTIONS[1] },
+  { topic: 'Learning and adaptability', starterQuestion: GENERIC_QUESTIONS[2] },
+  { topic: 'Collaboration', starterQuestion: GENERIC_QUESTIONS[3] },
+  { topic: 'Motivation and role fit', starterQuestion: GENERIC_QUESTIONS[4] },
+].map((t) => ({ ...t, why: '[Mock AI] Generic placeholder topic.' }));
+
+// Conversational plan (Phase 7.6).
+function generateInterviewPlan(promptVersion) {
+  return {
+    resumeJdScore: 70,
+    resumeJdRationale: '[Mock AI] Placeholder score for local testing. No resume analysis was performed.',
+    topics: MOCK_TOPICS,
+    openingLeadIn:
+      "Hi, thanks for joining. This will be a conversation: I'll ask follow-up questions based on what you tell me.",
+    openingQuestion: MOCK_TOPICS[0].starterQuestion,
+    model: MOCK_MODEL,
+    promptVersion,
+  };
+}
+
+// Imitates the real turn logic just enough to exercise the flow: a short
+// answer (< 25 words) gets one follow-up that quotes it; otherwise move to
+// the next uncovered topic; end once the plan is covered.
+function generateNextTurn({ plan, turns }, promptVersion) {
+  const last = turns[turns.length - 1];
+  const words = last && last.responseText ? last.responseText.trim().split(/\s+/).length : 0;
+  const base = { model: MOCK_MODEL, promptVersion };
+
+  if (last && words < 25 && last.kind !== 'follow_up') {
+    const snippet = last.responseText.trim().split(/\s+/).slice(0, 8).join(' ').replace(/[.,;:!?]+$/, '');
+    return {
+      ...base,
+      action: 'follow_up',
+      topic: last.topic,
+      leadIn: 'Thanks, I’d like to hear a bit more about that.',
+      questionText: `You mentioned "${snippet}". Could you walk me through a specific example, including what you personally did and how it turned out?`,
+      rationale: `[Mock AI] Follow-up because the previous answer was short (${words} words).`,
+    };
+  }
+
+  const covered = new Set(turns.map((t) => t.topic));
+  const next = plan.topics.find((t) => !covered.has(t.topic));
+  if (!next) {
+    return {
+      ...base,
+      action: 'end',
+      topic: last ? last.topic : '',
+      leadIn: 'Thank you, that covers everything I wanted to ask.',
+      questionText: '',
+      rationale: '[Mock AI] All planned topics covered.',
+    };
+  }
+  return {
+    ...base,
+    action: 'new_topic',
+    topic: next.topic,
+    leadIn: 'Thanks, that’s helpful context.',
+    questionText: next.starterQuestion,
+    rationale: `[Mock AI] Moving to the next planned topic: ${next.topic}.`,
+  };
+}
+
 // Score loosely tracks how much the candidate wrote, so different test runs
 // show different-looking reports. Still a placeholder.
 function evaluateTranscript(transcript, promptVersion) {
@@ -93,6 +157,8 @@ function synthesizeSpeech() {
 module.exports = {
   MOCK_MODEL,
   generateSessionQuestionsAndScore,
+  generateInterviewPlan,
+  generateNextTurn,
   evaluateTranscript,
   transcribeAudio,
   synthesizeSpeech,

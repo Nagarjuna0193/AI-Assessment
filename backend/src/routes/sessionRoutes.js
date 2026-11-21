@@ -9,6 +9,7 @@ const voiceService = require('../services/voiceService');
 const resumeParserService = require('../services/resumeParserService');
 const storageService = require('../services/storageService');
 const retentionService = require('../services/retentionService');
+const conversationService = require('../services/conversationService');
 
 const router = express.Router();
 
@@ -48,6 +49,104 @@ function toCandidateReviewView(r) {
     resolvedAt: r.resolvedAt,
     candidateResponse: r.candidateResponse,
   };
+}
+
+// Phase 7.6: a session is conversational when it was given an interview
+// plan at resume upload (AI-mode templates). Sessions without one (MANUAL
+// templates, or AI sessions started before 7.6 with all questions
+// pre-generated) keep the fixed question-by-question flow.
+function isConversational(session) {
+  return !!(session.interviewPlan && session.interviewPlan.topics);
+}
+
+function toCandidateQuestion(q) {
+  return { id: q.id, orderIndex: q.orderIndex, questionText: q.questionText, leadIn: q.leadIn || null, kind: q.kind || null };
+}
+
+async function completeSession(session) {
+  const completedAt = new Date();
+  await prisma.candidateSession.update({
+    where: { id: session.id },
+    data: {
+      status: 'COMPLETED',
+      completedAt,
+      // DPDP retention clock starts at completion.
+      dataRetentionUntil: retentionService.retentionUntilFrom(completedAt),
+    },
+  });
+}
+
+// Conversational interviews: once every question so far has an answer, ask
+// the AI (via conversationService's guard rails) for the next question or
+// the end of the interview. Returns the API response body.
+async function advanceConversation(session) {
+  const questions = await prisma.question.findMany({
+    where: { sessionId: session.id },
+    orderBy: { orderIndex: 'asc' },
+    include: { responses: true },
+  });
+  const turns = questions.map((q) => ({
+    questionText: q.questionText,
+    responseText: q.responses[0] ? q.responses[0].responseText : null,
+    kind: q.kind,
+    topic: q.topic,
+  }));
+  const pending = questions.find((q) => !q.responses[0]);
+  if (pending) {
+    // Nothing to generate: the current question still needs an answer.
+    return { done: false, nextQuestion: toCandidateQuestion(pending) };
+  }
+
+  const decision = await conversationService.decideNextTurn({
+    jobDescriptionText: session.template.jobDescriptionText,
+    resumeText: session.resumeText,
+    plan: session.interviewPlan,
+    turns,
+  });
+
+  const auditBase = {
+    actorType: 'system',
+    entityType: 'candidate_session',
+    entityId: session.id,
+    modelVersion: decision.model || null,
+    promptRef: decision.promptVersion || null,
+    inputRef: `candidate_session:${session.id}.transcript[1..${turns.length}]+resume+template:${session.template.id}`,
+  };
+  // Server-side rules overrode or replaced the AI's proposal: log why.
+  if (decision.override) {
+    await logAuditEvent({
+      ...auditBase,
+      action: 'interview_turn_overridden',
+      outputRef: `ai_action:${decision.aiAction || 'none'}`,
+      purpose: `Conversational interview guard rail: ${decision.override}${decision.error ? ` (${decision.error})` : ''}`,
+    });
+  }
+
+  if (decision.end) {
+    await completeSession(session);
+    await logAuditEvent({
+      ...auditBase,
+      action: 'interview_ended',
+      outputRef: `candidate_session:${session.id}.status=COMPLETED`,
+      purpose: `Conversational interview ended after ${turns.length} questions (${decision.source})`,
+    });
+    return { done: true, message: 'Interview complete', closingMessage: decision.leadIn };
+  }
+
+  const created = await prisma.question.create({
+    data: {
+      sessionId: session.id,
+      orderIndex: questions.length,
+      ...decision.question,
+    },
+  });
+  await logAuditEvent({
+    ...auditBase,
+    action: 'question_generated',
+    outputRef: `question:${created.id}`,
+    purpose: `Adaptive interview question (${decision.question.kind}) from JD + resume + answers so far`,
+  });
+  return { done: false, nextQuestion: toCandidateQuestion(created) };
 }
 
 function mapVoiceProviderError(err, res, errorCode) {
@@ -91,10 +190,19 @@ router.get('/:token', async (req, res, next) => {
       email: session.email,
       roleName: session.template.roleName,
       resumeUploaded: !!session.resumeText,
+      // Phase 7.6: conversational sessions grow one question at a time, so
+      // the candidate sees an expected range instead of a fixed total.
+      conversational: isConversational(session),
+      questionLimits: isConversational(session)
+        ? { min: conversationService.LIMITS.minQuestions, max: conversationService.LIMITS.maxQuestions }
+        : null,
+      // Candidate-safe: never the AI's rationale or topic labels.
       transcript: questions.map((q) => ({
         questionId: q.id,
         orderIndex: q.orderIndex,
         questionText: q.questionText,
+        leadIn: q.leadIn || null,
+        kind: q.kind || null,
         responseText: q.responses[0] ? q.responses[0].responseText : null,
       })),
       // Candidate-safe view only: no internal notes, outcome, or scores.
@@ -208,13 +316,17 @@ router.post('/:token/resume', upload.single('resume'), async (req, res, next) =>
 
     const resumeFileRef = await storageService.uploadResumeFile(session.id, req.file.buffer, req.file.originalname);
 
+    const conversational = session.template.questionMode === 'AI';
+
     let generated;
     try {
-      generated = await anthropicService.generateSessionQuestionsAndScore(
-        session.template.jobDescriptionText,
-        resumeText,
-        session.template.questionMode
-      );
+      generated = conversational
+        ? await anthropicService.generateInterviewPlan(session.template.jobDescriptionText, resumeText)
+        : await anthropicService.generateSessionQuestionsAndScore(
+            session.template.jobDescriptionText,
+            resumeText,
+            session.template.questionMode
+          );
     } catch (err) {
       if (mapAnthropicError(err, res, 'question_generation_declined', 'question_generation_failed')) {
         return;
@@ -222,28 +334,40 @@ router.post('/:token/resume', upload.single('resume'), async (req, res, next) =>
       throw err;
     }
 
-    const questionTexts =
-      session.template.questionMode === 'AI'
-        ? generated.questions.map((q) => q.questionText)
-        : session.template.manualQuestions;
+    // AI mode (Phase 7.6): only the opening question exists up front; the
+    // rest are written from the candidate's answers. MANUAL mode: the
+    // template's fixed questions, all at once (unchanged).
+    const questionRows = conversational
+      ? [
+          {
+            questionText: generated.openingQuestion,
+            leadIn: generated.openingLeadIn,
+            kind: 'opening',
+            topic: generated.topics[0].topic,
+            rationale: `Opening question for the first planned topic: ${generated.topics[0].why}`,
+            generatedByModel: generated.model,
+          },
+        ]
+      : session.template.manualQuestions.map((questionText) => ({ questionText, generatedByModel: 'manual' }));
+
+    const sessionData = {
+      resumeFileRef,
+      resumeText,
+      resumeJdScore: generated.resumeJdScore,
+      resumeJdRationale: generated.resumeJdRationale,
+    };
+    if (conversational) {
+      sessionData.interviewPlan = {
+        version: generated.promptVersion,
+        topics: generated.topics,
+        limits: conversationService.LIMITS,
+      };
+    }
 
     const [, , questions] = await prisma.$transaction([
-      prisma.candidateSession.update({
-        where: { id: session.id },
-        data: {
-          resumeFileRef,
-          resumeText,
-          resumeJdScore: generated.resumeJdScore,
-          resumeJdRationale: generated.resumeJdRationale,
-        },
-      }),
+      prisma.candidateSession.update({ where: { id: session.id }, data: sessionData }),
       prisma.question.createMany({
-        data: questionTexts.map((questionText, index) => ({
-          sessionId: session.id,
-          orderIndex: index,
-          questionText,
-          generatedByModel: session.template.questionMode === 'AI' ? generated.model : 'manual',
-        })),
+        data: questionRows.map((row, index) => ({ sessionId: session.id, orderIndex: index, ...row })),
       }),
       prisma.question.findMany({ where: { sessionId: session.id }, orderBy: { orderIndex: 'asc' } }),
     ]);
@@ -254,15 +378,15 @@ router.post('/:token/resume', upload.single('resume'), async (req, res, next) =>
       promptRef: generated.promptVersion,
       inputRef: `template:${session.template.id}+resume:${resumeFileRef}`,
     };
-    if (session.template.questionMode === 'AI') {
+    if (conversational) {
       await logAuditEvent({
         actorType: 'system',
-        action: 'question_generated',
+        action: 'interview_plan_generated',
         entityType: 'candidate_session',
         entityId: session.id,
         ...auditRefs,
-        outputRef: `questions:session:${session.id}`,
-        purpose: 'Personalized interview question generation from JD + resume',
+        outputRef: `candidate_session:${session.id}.interview_plan+questions:session:${session.id}[1]`,
+        purpose: 'Conversational interview plan (topics) and opening question from JD + resume',
       });
     }
     await logAuditEvent({
@@ -278,12 +402,10 @@ router.post('/:token/resume', upload.single('resume'), async (req, res, next) =>
     const firstQuestion = questions[0];
 
     res.status(200).json({
-      totalQuestions: questions.length,
-      firstQuestion: firstQuestion && {
-        id: firstQuestion.id,
-        orderIndex: firstQuestion.orderIndex,
-        questionText: firstQuestion.questionText,
-      },
+      conversational,
+      // Conversational sessions add questions as they go.
+      totalQuestions: conversational ? null : questions.length,
+      firstQuestion: firstQuestion && toCandidateQuestion(firstQuestion),
     });
   } catch (err) {
     next(err);
@@ -321,22 +443,17 @@ router.post('/:token/answers', async (req, res, next) => {
       data: { sessionId: session.id, questionId, responseText, submittedAt: new Date() },
     });
 
+    if (isConversational(session)) {
+      return res.status(200).json(await advanceConversation(session));
+    }
+
     const [totalQuestions, answeredCount] = await Promise.all([
       prisma.question.count({ where: { sessionId: session.id } }),
       prisma.response.count({ where: { sessionId: session.id } }),
     ]);
 
     if (answeredCount >= totalQuestions) {
-      const completedAt = new Date();
-      await prisma.candidateSession.update({
-        where: { id: session.id },
-        data: {
-          status: 'COMPLETED',
-          completedAt,
-          // DPDP retention clock starts at completion.
-          dataRetentionUntil: retentionService.retentionUntilFrom(completedAt),
-        },
-      });
+      await completeSession(session);
       return res.status(200).json({ done: true, message: 'Interview complete' });
     }
 
@@ -351,12 +468,29 @@ router.post('/:token/answers', async (req, res, next) => {
 
     res.status(200).json({
       done: false,
-      nextQuestion: nextQuestion && {
-        id: nextQuestion.id,
-        orderIndex: nextQuestion.orderIndex,
-        questionText: nextQuestion.questionText,
-      },
+      nextQuestion: nextQuestion && toCandidateQuestion(nextQuestion),
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Phase 7.6 recovery: if the server stopped between saving an answer and
+// writing the next question, the candidate page calls this to continue.
+// Idempotent: returns the pending question if one is already waiting.
+router.post('/:token/next-question', async (req, res, next) => {
+  try {
+    const session = await findSessionByToken(req.params.token);
+    if (!session) {
+      return res.status(404).json({ error: 'session_not_found' });
+    }
+    if (session.status !== 'IN_PROGRESS') {
+      return res.status(409).json({ error: 'session_not_in_progress', message: `Session status is ${session.status}` });
+    }
+    if (!isConversational(session)) {
+      return res.status(409).json({ error: 'not_conversational', message: 'This interview has a fixed question set' });
+    }
+    res.status(200).json(await advanceConversation(session));
   } catch (err) {
     next(err);
   }
@@ -572,7 +706,10 @@ router.get('/:token/questions/:questionId/audio', async (req, res, next) => {
 
     let speech;
     try {
-      speech = await voiceService.synthesizeSpeech(question.questionText);
+      // Conversational questions are read with their spoken lead-in.
+      speech = await voiceService.synthesizeSpeech(
+        question.leadIn ? `${question.leadIn} ${question.questionText}` : question.questionText
+      );
     } catch (err) {
       if (mapVoiceProviderError(err, res, 'tts_failed')) {
         return;

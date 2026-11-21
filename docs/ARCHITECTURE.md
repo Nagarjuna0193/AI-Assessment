@@ -189,11 +189,13 @@ with `input_ref` / `output_ref` pointers to the data used and produced.
 
 | Decision | When | Inputs | Output | Prompt version |
 |----------|------|--------|--------|----------------|
-| Personalized questions + resume fit (AI mode) | Candidate uploads resume | JD text, resume text | 5-8 questions; resume-JD score 0-100 + rationale | `session_questions_and_score.v1` |
+| Interview plan + resume fit (AI mode, Phase 7.6) | Candidate uploads resume | JD text, resume text | 4-6 topics (each with reason + starter question), opening lead-in + question; resume-JD score 0-100 + rationale | `interview_plan.v1` |
+| Next interview question (AI mode, Phase 7.6) | Candidate submits an answer | JD text, resume text, plan topics, conversation so far, question-count limits | `follow_up` / `new_topic` / `end`, topic, neutral lead-in, question, reviewer-only rationale — then server guard rails apply (see below) | `interview_turn.v1` (effort `low`) |
+| Personalized questions + resume fit (pre-7.6 AI sessions; no longer called for new sessions) | — | JD text, resume text | 5-8 questions; resume-JD score + rationale | `session_questions_and_score.v1` |
 | Resume fit only (MANUAL mode) | Candidate uploads resume | JD text, resume text | resume-JD score 0-100 + rationale | `resume_score_only.v1` |
-| Interview evaluation / feedback report | Reviewer clicks "Run evaluation" on a completed session | JD text, Q&A transcript, answer mode (text/voice) | see below | `evaluation.v2` |
+| Interview evaluation / feedback report | Reviewer clicks "Run evaluation" on a completed session | JD text, Q&A transcript, answer mode (text/voice) | see below | `evaluation.v3` (v2 + "follow-ups are not negative evidence") |
 
-**Evaluation report (`evaluation.v2`)**
+**Evaluation report (`evaluation.v2`/`v3`)**
 - 4-6 criteria derived from the JD, each scored 1-5 with anchors
   (1 = no evidence / below bar, 3 = meets bar, 5 = exceptional with specific
   evidence), with an evidence quote and the question numbers it came from.
@@ -273,3 +275,35 @@ reviewer UI shows the latest.
 - **Headers:** `frontend/next.config.js` sets Referrer-Policy, framing,
   nosniff and Permissions-Policy for every route; `pages/_document.js`
   sets `lang="en"` and `noindex`.
+
+## Conversational interview (Phase 7.6)
+
+AI-mode sessions are adaptive. MANUAL-mode sessions (and AI sessions
+created before 7.6) keep the fixed question list.
+
+```
+resume upload ──> Claude: interview_plan.v1 ──> candidate_sessions.interview_plan
+                   (score + 4-6 topics + opening)    questions[0] (kind=opening)
+answer N saved ──> conversationService.decideNextTurn
+                     ├─ N >= 10 ───────────────────────────> end (no AI call)
+                     ├─ Claude: interview_turn.v1 (effort low, JD/resume/plan cached)
+                     │    └─ proposal: follow_up | new_topic | end
+                     ├─ guard rails: end before 5? 3rd follow-up in a row?
+                     │   empty question? AI error? ──> next uncovered plan topic
+                     │                                 (kind=plan_fallback, audit
+                     │                                  interview_turn_overridden)
+                     └─ questions[N] (lead_in, kind, topic, rationale)  or  COMPLETED
+```
+
+- Code: `backend/src/services/conversationService.js` (rules),
+  `anthropicService.generateInterviewPlan` / `generateNextTurn` (prompts),
+  `sessionRoutes.advanceConversation` (persistence + audit).
+- Audit actions: `interview_plan_generated`, `question_generated` (one per
+  AI question, `input_ref` = transcript range + resume + template),
+  `interview_turn_overridden`, `interview_ended`, `resume_jd_scored`.
+- Candidate sees: lead-in + question + kind. Reviewer additionally sees
+  topic, rationale ("why asked") and the plan.
+- Anonymization nulls `interview_plan`, `lead_in`, `topic`, `rationale`
+  (they can paraphrase the resume or answers).
+- Recovery: `POST /api/sessions/:token/next-question` continues an interview
+  whose last answer was saved but whose next question wasn't written.

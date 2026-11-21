@@ -176,7 +176,17 @@ describe('GET /api/interviews/:id (template + session detail)', () => {
     expect(res.body.session.resumeJdScore).toBe(82);
     expect(res.body.session.resumeJdRationale).toBe('Strong backend experience match.');
     expect(res.body.transcript).toEqual([
-      { questionId: 'q1', orderIndex: 0, questionText: 'Q1', responseText: 'A1' },
+      {
+        questionId: 'q1',
+        orderIndex: 0,
+        questionText: 'Q1',
+        leadIn: null,
+        kind: null,
+        topic: null,
+        rationale: null,
+        generatedByModel: null,
+        responseText: 'A1',
+      },
     ]);
     expect(res.body.evaluation.overallScore).toBe(78);
     expect(res.body.proctoring).toEqual(

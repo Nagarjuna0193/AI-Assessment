@@ -29,7 +29,8 @@ legal opinion. Have counsel review it before the pilot starts.
       The text for each version lives in `frontend/pages/invite/[token].js`
       and its git history (v1 up to Phase 6; v2 from Phase 7 adds
       tab/fullscreen monitoring, the retention period, and in-page
-      withdrawal).
+      withdrawal; v3 from Phase 7.6 says each answer is sent to the AI
+      provider during the interview to choose follow-up questions).
 - [x] Candidate can withdraw consent and understand what that means
       (Phase 7). Every page after consent has a "Withdraw consent and delete
       my data" link with a confirm step that explains the effect
@@ -51,6 +52,12 @@ legal opinion. Have counsel review it before the pilot starts.
 - [x] Invite tokens don't leak from the browser (Phase 7.5): the frontend
       sends `Referrer-Policy: no-referrer`, marks every page `noindex`, and
       loads no third-party fonts, scripts or analytics.
+- [x] Every AI-chosen interview question is explainable (Phase 7.6): stored
+      with the AI's reviewer-only rationale and topic, audit-logged with
+      the transcript range it was based on, and bounded by server rules
+      (5-10 questions, max 2 follow-ups in a row) so interview length can't
+      be driven by the model or a prompt-injected answer. Overrides of the
+      AI are logged (`interview_turn_overridden`).
 - [x] Data retention period defined and enforced (Phase 7). See below.
       Enforcement needs the retention job scheduled on the host, which is
       part of Phase 8 deployment.

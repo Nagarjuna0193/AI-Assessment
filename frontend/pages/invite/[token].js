@@ -21,8 +21,9 @@ import { validateDocumentFile } from '../../lib/files';
 import useProctoring from '../../lib/useProctoring';
 
 // v2 (Phase 7): adds tab/fullscreen monitoring, the retention period, and
-// in-page withdrawal/erasure.
-const CONSENT_TEXT_VERSION = 'v2';
+// in-page withdrawal/erasure. v3 (Phase 7.6): answers are also sent to the AI
+// during the interview to choose follow-up questions.
+const CONSENT_TEXT_VERSION = 'v3';
 // The server sends its configured value (DATA_RETENTION_DAYS); this is only
 // a fallback.
 const DEFAULT_RETENTION_DAYS = 180;
@@ -247,8 +248,9 @@ function ConsentStep({ token, session, onStarted }) {
             </p>
             <p>
               Your resume will be sent to our AI provider along with the job description to generate interview
-              questions and a resume-fit score. Your answers will be recorded and sent to our AI provider to produce
-              a structured evaluation for the hiring team. This data is used only for this recruitment process. It
+              questions and a resume-fit score. The interview is a conversation: during it, each answer you give is
+              sent to our AI provider so it can choose the next question or a follow-up. Your answers will be recorded
+              and sent to our AI provider to produce a structured evaluation for the hiring team. This data is used only for this recruitment process. It
               is kept for {session.retentionDays || DEFAULT_RETENTION_DAYS} days after your interview is completed
               and then anonymized.
             </p>
@@ -369,7 +371,7 @@ function ResumeUploadStep({ token, session, onUploaded }) {
       <p className="mt-1 mb-6 text-slate-600">
         We use your resume, together with the job description for{' '}
         <span className="font-medium text-slate-900">{session.roleName}</span>, to prepare your interview
-        questions and a resume-fit assessment.
+        and a resume-fit assessment.
       </p>
 
       <Card>
@@ -390,7 +392,7 @@ function ResumeUploadStep({ token, session, onUploaded }) {
           </Button>
           {submitting && (
             <p className="hint text-center" role="status">
-              This can take up to a minute while your questions are prepared. Please keep this page open.
+              This can take up to a minute while your interview is prepared. Please keep this page open.
             </p>
           )}
         </form>
@@ -401,23 +403,39 @@ function ResumeUploadStep({ token, session, onUploaded }) {
 }
 
 // --------------------------------------------------------- 3. interview ---
+// Phase 7.6: the interview is shown as a conversation. In AI-mode sessions
+// (session.conversational) each next question is written by the AI from the
+// candidate's answers, so there is no fixed total — the candidate sees the
+// expected range instead. MANUAL sessions use the same layout with a fixed
+// count.
 function InterviewStep({ token, session, onChange }) {
   const [answer, setAnswer] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // The answer being sent, shown in the conversation straight away.
+  const [pendingAnswer, setPendingAnswer] = useState(null);
   const [error, setError] = useState(null);
+  const [resuming, setResuming] = useState(false);
   const proctoring = useProctoring(token);
   const questionRef = useRef(null);
+  const endRef = useRef(null);
+  const triedResume = useRef(false);
 
   const transcript = session.transcript || [];
+  const conversational = !!session.conversational;
+  const limits = session.questionLimits;
   const unanswered = transcript.find((t) => !t.responseText);
   const answeredCount = transcript.filter((t) => t.responseText).length;
-  const totalQuestions = transcript.length;
+  const questionNumber = answeredCount + 1;
   const questionId = unanswered && unanswered.questionId;
+  const isFinalFixedQuestion = !conversational && questionNumber === transcript.length;
 
-  // New question: move focus to it so it's read out, and clear any error.
+  // New question: clear the sent answer, move focus to the question so it's
+  // read out, and keep the latest exchange in view.
   useEffect(() => {
-    if (questionId && questionRef.current) questionRef.current.focus();
+    setPendingAnswer(null);
     setError(null);
+    if (questionId && questionRef.current) questionRef.current.focus({ preventScroll: true });
+    if (endRef.current) endRef.current.scrollIntoView({ block: 'end', behavior: 'smooth' });
   }, [questionId]);
 
   // Don't silently lose a typed answer on refresh/close.
@@ -431,7 +449,31 @@ function InterviewStep({ token, session, onChange }) {
     return () => window.removeEventListener('beforeunload', warn);
   }, [answer]);
 
-  if (!unanswered) {
+  // Every question answered but the interview isn't over: the next question
+  // wasn't written (e.g. the server restarted mid-turn). Continue once
+  // automatically; the button below covers a second failure.
+  const resume = useCallback(async () => {
+    setResuming(true);
+    setError(null);
+    try {
+      await api.continueSession(token);
+      await onChange();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not continue the interview.');
+    } finally {
+      setResuming(false);
+    }
+  }, [token, onChange]);
+
+  const stalled = !unanswered && conversational;
+  useEffect(() => {
+    if (stalled && !triedResume.current) {
+      triedResume.current = true;
+      resume();
+    }
+  }, [stalled, resume]);
+
+  if (!unanswered && !conversational) {
     return (
       <Notice title="No question available" pageTitle="Interview">
         There is no question available for this interview right now. Please refresh the page, or contact the
@@ -441,18 +483,20 @@ function InterviewStep({ token, session, onChange }) {
   }
 
   const submit = async () => {
-    if (!answer.trim() || submitting) return;
+    if (!unanswered || !answer.trim() || submitting) return;
+    const text = answer.trim();
     setSubmitting(true);
+    setPendingAnswer(text);
     setError(null);
     try {
-      await api.submitSessionAnswer(token, {
-        questionId: unanswered.questionId,
-        responseText: answer.trim(),
-      });
+      await api.submitSessionAnswer(token, { questionId: unanswered.questionId, responseText: text });
       setAnswer('');
       await onChange();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not submit your answer. Your text is still here.');
+      setPendingAnswer(null);
+      setError(err instanceof ApiError ? err.message : 'Could not send your answer. Your text is still here.');
+      // The answer may have been saved even though the next step failed.
+      onChange();
     } finally {
       setSubmitting(false);
     }
@@ -463,7 +507,7 @@ function InterviewStep({ token, session, onChange }) {
     submit();
   };
 
-  // Ctrl/Cmd+Enter submits from the textarea.
+  // Ctrl/Cmd+Enter sends from the textarea.
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
@@ -471,30 +515,33 @@ function InterviewStep({ token, session, onChange }) {
     }
   };
 
-  const progressPct = totalQuestions ? Math.round((answeredCount / totalQuestions) * 100) : 0;
+  const progressLabel = conversational
+    ? `Question ${questionNumber}`
+    : `Question ${questionNumber} of ${transcript.length}`;
 
   return (
-    <Layout title={`Question ${answeredCount + 1} of ${totalQuestions}`}>
+    <Layout title={progressLabel}>
       <StepIndicator current={2} />
 
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">
         <span className="font-medium text-slate-800">{session.roleName}</span>
         <span className="flex items-center gap-2">
           {session.mode === 'VOICE' && <Badge tone="brand">Voice</Badge>}
-          Question {answeredCount + 1} of {totalQuestions}
+          {unanswered ? progressLabel : 'Interview'}
+          {conversational && limits && (
+            <span className="text-slate-500">
+              · usually {limits.min}–{limits.max} questions
+            </span>
+          )}
         </span>
       </div>
-      <div
-        role="progressbar"
-        aria-label="Questions answered"
-        aria-valuemin={0}
-        aria-valuemax={totalQuestions}
-        aria-valuenow={answeredCount}
-        aria-valuetext={`${answeredCount} of ${totalQuestions} answered`}
-        className="mb-6 h-1.5 w-full overflow-hidden rounded-full bg-slate-200"
-      >
-        <div className="h-full rounded-full bg-brand-600 transition-all duration-500" style={{ width: `${progressPct}%` }} />
-      </div>
+
+      {conversational && answeredCount === 0 && (
+        <p className="mb-4 rounded-md border border-brand-100 bg-brand-50 px-4 py-3 text-sm text-brand-900">
+          This is a conversation. The interviewer reads each answer and may ask a follow-up about it, so answer in
+          your own words with specific examples where you can.
+        </p>
+      )}
 
       {proctoring.lastWarning && (
         <Alert tone="warning" onDismiss={proctoring.dismissWarning} className="mb-4">
@@ -510,54 +557,147 @@ function InterviewStep({ token, session, onChange }) {
         </div>
       )}
 
-      <div className="card p-5 sm:p-6">
-        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-brand-700">Question {answeredCount + 1}</p>
-        <h1
-          ref={questionRef}
-          tabIndex={-1}
-          className="mb-5 text-lg font-medium leading-relaxed text-slate-900 focus:outline-none"
-        >
-          {unanswered.questionText}
-        </h1>
+      <div className="card p-4 sm:p-6">
+        <ol aria-label="Interview conversation" className="space-y-5">
+          {transcript.map((t, i) => {
+            const isCurrent = t.questionId === questionId;
+            return (
+              <li key={t.questionId} className="space-y-3">
+                <InterviewerMessage
+                  leadIn={t.leadIn}
+                  label={`Question ${i + 1}${t.kind === 'follow_up' ? ' · follow-up' : ''}`}
+                >
+                  {isCurrent ? (
+                    <h1 ref={questionRef} tabIndex={-1} className="font-medium text-slate-900 focus:outline-none">
+                      {t.questionText}
+                    </h1>
+                  ) : (
+                    <p className="text-slate-800">{t.questionText}</p>
+                  )}
+                </InterviewerMessage>
+                {t.responseText && <CandidateMessage>{t.responseText}</CandidateMessage>}
+                {isCurrent && pendingAnswer && <CandidateMessage>{pendingAnswer}</CandidateMessage>}
+              </li>
+            );
+          })}
+          {(submitting || resuming) && (
+            <li>
+              <ThinkingMessage
+                label={
+                  conversational
+                    ? 'The interviewer is reading your answer…'
+                    : isFinalFixedQuestion
+                      ? 'Finishing your interview…'
+                      : 'Loading the next question…'
+                }
+              />
+            </li>
+          )}
+        </ol>
+        <div ref={endRef} />
 
-        {session.mode === 'VOICE' && (
-          <VoiceControls
-            token={token}
-            questionId={unanswered.questionId}
-            onTranscribed={(text) => setAnswer(text)}
-            disabled={submitting}
-          />
+        {stalled && !resuming && (
+          <div className="mt-5 space-y-3">
+            <FormError>{error}</FormError>
+            <Button onClick={resume}>Continue interview</Button>
+          </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <Field
-            label="Your answer"
-            hint={
-              session.mode === 'VOICE'
-                ? 'Your recording is transcribed here. Check and edit it before submitting.'
-                : 'Press Ctrl + Enter to submit. You can’t change an answer after submitting.'
-            }
-          >
-            <textarea
-              rows={8}
-              value={answer}
-              onChange={(e) => setAnswer(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Type your answer here…"
-              disabled={submitting}
-              className="input leading-relaxed"
-            />
-          </Field>
-          <FormError>{error}</FormError>
-          <div className="flex flex-wrap items-center justify-end gap-3">
-            <Button type="submit" loading={submitting} loadingText="Submitting…" disabled={!answer.trim()}>
-              {answeredCount + 1 === totalQuestions ? 'Submit final answer' : 'Submit answer'}
-            </Button>
+        {unanswered && (
+          <div className="mt-6 border-t border-slate-100 pt-5">
+            {session.mode === 'VOICE' && (
+              <VoiceControls
+                token={token}
+                questionId={unanswered.questionId}
+                onTranscribed={(text) => setAnswer(text)}
+                disabled={submitting}
+              />
+            )}
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <Field
+                label="Your answer"
+                hint={
+                  session.mode === 'VOICE'
+                    ? 'Your recording is transcribed here. Check and edit it before sending.'
+                    : 'Press Ctrl + Enter to send. You can’t change an answer after sending.'
+                }
+              >
+                <textarea
+                  rows={6}
+                  value={answer}
+                  onChange={(e) => setAnswer(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Type your answer here…"
+                  disabled={submitting}
+                  className="input leading-relaxed"
+                />
+              </Field>
+              <FormError>{error}</FormError>
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                <Button type="submit" loading={submitting} loadingText="Sending…" disabled={!answer.trim()}>
+                  {isFinalFixedQuestion ? 'Send final answer' : 'Send answer'}
+                </Button>
+              </div>
+            </form>
           </div>
-        </form>
+        )}
       </div>
       <DataErasure token={token} inProgress onErased={onChange} />
     </Layout>
+  );
+}
+
+function InterviewerMessage({ label, leadIn, children }) {
+  return (
+    <div className="flex items-start gap-3">
+      <span
+        aria-hidden="true"
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-600 text-xs font-semibold text-white"
+      >
+        AI
+      </span>
+      <div className="min-w-0 max-w-prose rounded-2xl rounded-tl-sm bg-slate-100 px-4 py-3 leading-relaxed">
+        <p className="mb-1 text-xs font-medium text-brand-700">
+          <span className="sr-only">Interviewer, </span>
+          {label}
+        </p>
+        {leadIn && <p className="mb-1.5 text-sm text-slate-600">{leadIn}</p>}
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function CandidateMessage({ children }) {
+  return (
+    <div className="flex justify-end">
+      <div className="min-w-0 max-w-prose rounded-2xl rounded-tr-sm bg-brand-600 px-4 py-3 text-sm leading-relaxed text-white">
+        <p className="sr-only">Your answer:</p>
+        <p className="whitespace-pre-wrap break-words">{children}</p>
+      </div>
+    </div>
+  );
+}
+
+function ThinkingMessage({ label }) {
+  return (
+    <div className="flex items-start gap-3" role="status">
+      <span
+        aria-hidden="true"
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-600 text-xs font-semibold text-white"
+      >
+        AI
+      </span>
+      <div className="flex items-center gap-2 rounded-2xl rounded-tl-sm bg-slate-100 px-4 py-3 text-sm text-slate-600">
+        <span aria-hidden="true" className="flex gap-1">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-slate-400" />
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-slate-400 [animation-delay:150ms]" />
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-slate-400 [animation-delay:300ms]" />
+        </span>
+        {label}
+      </div>
+    </div>
   );
 }
 

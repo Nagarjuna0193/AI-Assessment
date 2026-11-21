@@ -215,7 +215,16 @@ did (same consent-type-per-mode rule, see `docs/DECISIONS.md`).
 
 Mandatory resume upload. Extracts text (`pdf-parse`/`mammoth`), stores the
 original file (Supabase Storage, or local disk in dev — see
-`docs/DECISIONS.md`), then makes **one** Claude call
+`docs/DECISIONS.md`), then makes **one** Claude call.
+
+**AI mode (Phase 7.6, conversational):** the call is
+`generateInterviewPlan` — resume score + rationale, an interview plan
+(stored on the session) and an opening question. Only that one question is
+created; the rest are generated one per answer. Response:
+`{ "conversational": true, "totalQuestions": null, "firstQuestion": { "id", "orderIndex", "questionText", "leadIn", "kind": "opening" } }`.
+Audit: `interview_plan_generated` + `resume_jd_scored`.
+
+**MANUAL mode** (unchanged below): one Claude call
 (`generateSessionQuestionsAndScore`) that returns personalized questions
 (AI mode only) plus a resume-vs-JD score + rationale (always — MANUAL mode
 still gets scored, just skips question generation). The resulting questions
@@ -244,16 +253,26 @@ Writes an `audit_log` entry `question_generated` (AI mode only) and always write
 
 ### `POST /api/sessions/:token/answers`
 
-Submits a candidate's answer. Identical behavior to the old
-`POST /api/interviews/:id/answers` — returns the next question or an
-end-of-interview signal, marks the session `COMPLETED` once every question
-has a response.
+Submits a candidate's answer and returns the next question or an
+end-of-interview signal.
+
+- **Conversational sessions (Phase 7.6):** after saving the answer, the
+  next question is generated from JD + resume + plan + the conversation so
+  far, within server rules (5-10 questions, max 2 follow-ups in a row; on AI
+  failure the next planned topic is asked). `nextQuestion` additionally has
+  `leadIn` (short neutral acknowledgement) and `kind` (`follow_up` /
+  `new_topic` / `plan_fallback`). The final response has
+  `closingMessage`. The reviewer-only `rationale`/`topic` are never
+  returned here. Audit: `question_generated`, plus
+  `interview_turn_overridden` / `interview_ended` when they apply.
+- **Fixed sessions (MANUAL / pre-7.6):** the next pre-created question;
+  `COMPLETED` once every question has a response.
 
 **Request body**: `{ "questionId": "...", "responseText": "..." }`
 
 **Response `200` — more questions remain**: `{ "done": false, "nextQuestion": { "id", "orderIndex", "questionText" } }`
 
-**Response `200` — interview complete**: `{ "done": true, "message": "Interview complete" }`
+**Response `200` — interview complete**: `{ "done": true, "message": "Interview complete", "closingMessage": "..." }` (`closingMessage` conversational only)
 
 **Errors**
 - `400 invalid_request` — missing `questionId` or `responseText`.
@@ -341,9 +360,22 @@ Cannot be undone.
 
 Writes `audit_log` `data_anonymized` (actor `candidate`).
 
+### `POST /api/sessions/:token/next-question` (Phase 7.6)
+
+Recovery for conversational sessions: if every question has an answer but
+the session is still `IN_PROGRESS` (the server stopped between saving an
+answer and writing the next question), generates the next question (same
+logic and response as `/answers`). Idempotent: if a question is already
+waiting, returns it without calling the AI.
+
+**Errors**: `404 session_not_found`, `409 session_not_in_progress`,
+`409 not_conversational`.
+
 ### `GET /api/sessions/:token/questions/:questionId/audio`
 
 TTS — identical behavior to the old (Phase 4) endpoint, session/token-scoped.
+For conversational questions the spoken text is the lead-in followed by the
+question.
 
 **Response `200`**: `audio/mpeg` binary body.
 

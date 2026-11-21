@@ -116,6 +116,8 @@ router.get('/:id', requireOrgAuth, async (req, res, next) => {
         mode: session.mode,
         resumeJdScore: session.resumeJdScore,
         resumeJdRationale: session.resumeJdRationale,
+        // Phase 7.6: topics the AI planned to cover (conversational sessions).
+        interviewPlan: session.interviewPlan || null,
         createdAt: session.createdAt,
         completedAt: session.completedAt,
         dataRetentionUntil: session.dataRetentionUntil,
@@ -131,6 +133,12 @@ router.get('/:id', requireOrgAuth, async (req, res, next) => {
         questionId: q.id,
         orderIndex: q.orderIndex,
         questionText: q.questionText,
+        // Phase 7.6 explainability: why the AI asked this question.
+        leadIn: q.leadIn || null,
+        kind: q.kind || null,
+        topic: q.topic || null,
+        rationale: q.rationale || null,
+        generatedByModel: q.generatedByModel || null,
         responseText: q.responses[0] ? q.responses[0].responseText : null,
       })),
       evaluation: session.evaluations[0] || null,

@@ -10,6 +10,15 @@ import { formatDate, formatTime, plural } from '../../lib/format';
 
 const BACK = { href: '/dashboard', label: 'All interviews' };
 
+// Phase 7.6 conversational interviews: how each question came about.
+const QUESTION_KIND_LABELS = {
+  opening: 'Opening',
+  follow_up: 'Follow-up',
+  new_topic: 'New topic',
+  plan_fallback: 'From plan (fallback)',
+};
+const QUESTION_KIND_TONES = { follow_up: 'brand', plan_fallback: 'warning' };
+
 export default function SessionDetailPage() {
   return <RequireAuth>{(auth) => <SessionDetailContent auth={auth} />}</RequireAuth>;
 }
@@ -164,17 +173,37 @@ function SessionDetailContent({ auth }) {
             <ReviewRequestsPanel sessionId={id} requests={reviewRequests} onChange={() => load(id)} />
           </Card>
 
-          <Card title="Transcript">
+          <Card
+            title="Transcript"
+            description={
+              session.interviewPlan
+                ? 'Conversational interview: the AI chose each question from the answers so far. "Why asked" is the AI’s stated reason and is not shown to the candidate.'
+                : undefined
+            }
+          >
             {transcript.length === 0 ? (
               <p className="text-sm text-slate-600">No questions generated yet.</p>
             ) : (
               <ol className="space-y-5">
                 {transcript.map((t, i) => (
                   <li key={t.questionId} className="border-b border-slate-100 pb-5 last:border-0 last:pb-0">
+                    {(t.kind || t.topic) && (
+                      <div className="mb-1.5 flex flex-wrap items-center gap-2 pl-8 text-xs">
+                        {t.kind && <Badge tone={QUESTION_KIND_TONES[t.kind] || 'neutral'}>{QUESTION_KIND_LABELS[t.kind] || t.kind}</Badge>}
+                        {t.topic && <span className="text-slate-500">Topic: {t.topic}</span>}
+                      </div>
+                    )}
+                    {t.leadIn && <p className="mb-1 pl-8 text-sm text-slate-500">{t.leadIn}</p>}
                     <p className="flex gap-2 text-sm font-medium text-slate-900">
                       <span className="shrink-0 text-brand-700">Q{i + 1}</span>
                       <span>{t.questionText}</span>
                     </p>
+                    {t.rationale && (
+                      <p className="mt-1.5 pl-8 text-xs text-slate-500">
+                        <span className="font-medium text-slate-600">Why asked: </span>
+                        {t.rationale}
+                      </p>
+                    )}
                     <div className="mt-2 pl-8 text-sm leading-relaxed text-slate-700">
                       {t.responseText ? (
                         <p className="whitespace-pre-wrap">{t.responseText}</p>
@@ -190,6 +219,21 @@ function SessionDetailContent({ auth }) {
         </div>
 
         <div className="space-y-6">
+          {session.interviewPlan && session.interviewPlan.topics && (
+            <Card
+              title="Interview plan"
+              description="Topics the AI planned to cover, from the job description and resume."
+            >
+              <ol className="list-decimal space-y-2 pl-5 text-sm">
+                {session.interviewPlan.topics.map((t) => (
+                  <li key={t.topic}>
+                    <span className="font-medium text-slate-900">{t.topic}</span>
+                    {t.why && <span className="block text-slate-600">{t.why}</span>}
+                  </li>
+                ))}
+              </ol>
+            </Card>
+          )}
           <Card title="Resume fit" description="AI-assessed match between the resume and the job description.">
             {session.resumeJdScore != null ? (
               <div className="space-y-2">

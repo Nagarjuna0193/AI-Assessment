@@ -10,6 +10,7 @@ jest.mock('../src/db/prismaClient', () => {
       count: jest.fn(),
       findFirst: jest.fn(),
       createMany: jest.fn(),
+      create: jest.fn(),
     },
     response: { create: jest.fn(), findFirst: jest.fn(), findMany: jest.fn(), count: jest.fn() },
     auditLog: { create: jest.fn() },
@@ -22,7 +23,12 @@ jest.mock('../src/db/prismaClient', () => {
 
 jest.mock('../src/services/anthropicService', () => {
   const actual = jest.requireActual('../src/services/anthropicService');
-  return { ...actual, generateSessionQuestionsAndScore: jest.fn() };
+  return {
+    ...actual,
+    generateSessionQuestionsAndScore: jest.fn(),
+    generateInterviewPlan: jest.fn(),
+    generateNextTurn: jest.fn(),
+  };
 });
 
 jest.mock('../src/services/voiceService', () => {
@@ -115,8 +121,9 @@ describe('GET /api/sessions/:token', () => {
     expect(res.body.roleName).toBe('Backend Engineer');
     expect(res.body.resumeUploaded).toBe(true);
     expect(res.body.transcript).toEqual([
-      { questionId: 'q1', orderIndex: 0, questionText: 'Q1', responseText: 'A1' },
+      { questionId: 'q1', orderIndex: 0, questionText: 'Q1', leadIn: null, kind: null, responseText: 'A1' },
     ]);
+    expect(res.body.conversational).toBe(false);
     // Candidate view must not leak internal reviewer notes or the outcome.
     expect(res.body.reviewRequests[0].candidateResponse).toBe('We reviewed it.');
     expect(res.body.reviewRequests[0]).not.toHaveProperty('resolutionNotes');
@@ -266,21 +273,27 @@ describe('POST /api/sessions/:token/resume', () => {
     expect(res.status).toBe(409);
   });
 
-  it('extracts text, uploads the file, generates personalized questions + a resume score (AI mode)', async () => {
+  it('AI mode: scores the resume, stores the interview plan, and creates only the opening question', async () => {
     prisma.candidateSession.findUnique.mockResolvedValue(baseSession({ status: 'IN_PROGRESS' }));
     resumeParserService.extractText.mockResolvedValue('Resume text');
     storageService.uploadResumeFile.mockResolvedValue('supabase://resumes/sess_1/resume.pdf');
-    anthropicService.generateSessionQuestionsAndScore.mockResolvedValue({
-      questions: [{ questionText: 'Q1' }, { questionText: 'Q2' }],
+    anthropicService.generateInterviewPlan.mockResolvedValue({
       resumeJdScore: 85,
       resumeJdRationale: 'Strong match',
-      model: 'claude-opus-5',
+      topics: [
+        { topic: 'Node.js APIs', why: 'Core requirement', starterQuestion: 'Tell me about an API you built.' },
+        { topic: 'Postgres', why: 'Core requirement', starterQuestion: 'How do you design schemas?' },
+        { topic: 'Ownership', why: 'Resume claim', starterQuestion: 'What did you own end to end?' },
+      ],
+      openingLeadIn: 'Welcome, this will be a conversation.',
+      openingQuestion: 'What drew you to backend work?',
+      model: 'claude-opus-5-5',
+      promptVersion: 'interview_plan.v1',
     });
     prisma.candidateSession.update.mockResolvedValue({});
-    prisma.question.createMany.mockResolvedValue({ count: 2 });
+    prisma.question.createMany.mockResolvedValue({ count: 1 });
     prisma.question.findMany.mockResolvedValue([
-      { id: 'q1', orderIndex: 0, questionText: 'Q1' },
-      { id: 'q2', orderIndex: 1, questionText: 'Q2' },
+      { id: 'q1', orderIndex: 0, questionText: 'What drew you to backend work?', leadIn: 'Welcome, this will be a conversation.', kind: 'opening' },
     ]);
 
     const res = await request(app)
@@ -288,16 +301,37 @@ describe('POST /api/sessions/:token/resume', () => {
       .attach('resume', Buffer.from('%PDF-1.4 fake'), 'resume.pdf');
 
     expect(res.status).toBe(200);
-    expect(res.body.totalQuestions).toBe(2);
-    expect(res.body.firstQuestion.questionText).toBe('Q1');
+    expect(res.body.conversational).toBe(true);
+    expect(res.body.totalQuestions).toBeNull();
+    expect(res.body.firstQuestion).toEqual({
+      id: 'q1',
+      orderIndex: 0,
+      questionText: 'What drew you to backend work?',
+      leadIn: 'Welcome, this will be a conversation.',
+      kind: 'opening',
+    });
+    expect(anthropicService.generateSessionQuestionsAndScore).not.toHaveBeenCalled();
     expect(prisma.candidateSession.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ resumeJdScore: 85, resumeJdRationale: 'Strong match' }),
+        data: expect.objectContaining({
+          resumeJdScore: 85,
+          resumeJdRationale: 'Strong match',
+          interviewPlan: expect.objectContaining({ topics: expect.any(Array), limits: expect.any(Object) }),
+        }),
       })
     );
-    expect(prisma.auditLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ action: 'resume_jd_scored' }) })
-    );
+    expect(prisma.question.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          orderIndex: 0,
+          kind: 'opening',
+          topic: 'Node.js APIs',
+          generatedByModel: 'claude-opus-5-5',
+        }),
+      ],
+    });
+    const actions = prisma.auditLog.create.mock.calls.map((c) => c[0].data.action);
+    expect(actions).toEqual(['interview_plan_generated', 'resume_jd_scored']);
   });
 
   it('uses the template manual question set (MANUAL mode) and still scores the resume', async () => {
@@ -352,9 +386,7 @@ describe('POST /api/sessions/:token/resume', () => {
     prisma.candidateSession.findUnique.mockResolvedValue(baseSession({ status: 'IN_PROGRESS' }));
     resumeParserService.extractText.mockResolvedValue('Resume text');
     storageService.uploadResumeFile.mockResolvedValue('supabase://resumes/sess_1/resume.pdf');
-    anthropicService.generateSessionQuestionsAndScore.mockRejectedValue(
-      new anthropicService.AnthropicRefusalError('cyber')
-    );
+    anthropicService.generateInterviewPlan.mockRejectedValue(new anthropicService.AnthropicRefusalError('cyber'));
 
     const res = await request(app)
       .post(`/api/sessions/${TOKEN}/resume`)
@@ -593,5 +625,171 @@ describe('POST /api/sessions/:token/review-requests on an anonymized session', (
     expect(res.status).toBe(409);
     expect(res.body.error).toBe('session_anonymized');
     expect(prisma.humanReviewRequest.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/sessions/:token/answers (conversational, Phase 7.6)', () => {
+  const plan = {
+    topics: [
+      { topic: 'APIs', why: 'Core', starterQuestion: 'Tell me about an API you built.' },
+      { topic: 'Databases', why: 'Core', starterQuestion: 'How do you design schemas?' },
+      { topic: 'Ownership', why: 'Resume', starterQuestion: 'What did you own end to end?' },
+    ],
+  };
+  const convSession = () => baseSession({ status: 'IN_PROGRESS', resumeText: 'Resume text', interviewPlan: plan });
+
+  function answeredQuestions(n, kinds = []) {
+    return Array.from({ length: n }, (_, i) => ({
+      id: `q${i + 1}`,
+      orderIndex: i,
+      questionText: `Q${i + 1}`,
+      kind: kinds[i] || (i === 0 ? 'opening' : 'new_topic'),
+      topic: i === 0 ? 'APIs' : 'Databases',
+      responses: [{ responseText: `A${i + 1}` }],
+    }));
+  }
+
+  function arrangeAnswer(questions) {
+    prisma.candidateSession.findUnique.mockResolvedValue(convSession());
+    prisma.question.findUnique.mockResolvedValue({ id: questions[questions.length - 1].id, sessionId: 'sess_1' });
+    prisma.response.findFirst.mockResolvedValue(null);
+    prisma.response.create.mockResolvedValue({});
+    prisma.question.findMany.mockResolvedValue(questions);
+    prisma.question.create.mockImplementation(({ data }) => Promise.resolve({ id: 'q_new', ...data }));
+    prisma.candidateSession.update.mockResolvedValue({});
+  }
+
+  it('writes the AI follow-up as the next question, built from the answers so far', async () => {
+    arrangeAnswer(answeredQuestions(1));
+    anthropicService.generateNextTurn.mockResolvedValue({
+      action: 'follow_up',
+      topic: 'APIs',
+      leadIn: 'Thanks, that helps.',
+      questionText: 'You said you cut latency in half. How did you measure it?',
+      rationale: 'Answer claimed a result without evidence.',
+      model: 'claude-opus-5-5',
+      promptVersion: 'interview_turn.v1',
+    });
+
+    const res = await request(app).post(`/api/sessions/${TOKEN}/answers`).send({ questionId: 'q1', responseText: 'A1' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.done).toBe(false);
+    expect(res.body.nextQuestion).toEqual({
+      id: 'q_new',
+      orderIndex: 1,
+      questionText: 'You said you cut latency in half. How did you measure it?',
+      leadIn: 'Thanks, that helps.',
+      kind: 'follow_up',
+    });
+    // Candidate response must not include the reviewer-only rationale.
+    expect(res.body.nextQuestion).not.toHaveProperty('rationale');
+    expect(anthropicService.generateNextTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resumeText: 'Resume text',
+        turns: [{ questionText: 'Q1', responseText: 'A1', kind: 'opening', topic: 'APIs' }],
+      })
+    );
+    expect(prisma.question.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ orderIndex: 1, kind: 'follow_up', rationale: 'Answer claimed a result without evidence.' }),
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ action: 'question_generated', promptRef: 'interview_turn.v1' }) })
+    );
+  });
+
+  it('ignores an AI "end" before the minimum and asks the next planned topic instead', async () => {
+    arrangeAnswer(answeredQuestions(2));
+    anthropicService.generateNextTurn.mockResolvedValue({
+      action: 'end',
+      topic: '',
+      leadIn: 'Thanks!',
+      questionText: '',
+      rationale: 'Done',
+      model: 'claude-opus-5-5',
+      promptVersion: 'interview_turn.v1',
+    });
+
+    const res = await request(app).post(`/api/sessions/${TOKEN}/answers`).send({ questionId: 'q2', responseText: 'A2' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.done).toBe(false);
+    expect(res.body.nextQuestion.questionText).toBe('What did you own end to end?');
+    expect(res.body.nextQuestion.kind).toBe('plan_fallback');
+    expect(prisma.candidateSession.update).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ action: 'interview_turn_overridden' }) })
+    );
+  });
+
+  it('falls back to the plan when the AI call fails, so the candidate is not stuck', async () => {
+    arrangeAnswer(answeredQuestions(1));
+    anthropicService.generateNextTurn.mockRejectedValue(new anthropicService.AnthropicParseError('bad output'));
+
+    const res = await request(app).post(`/api/sessions/${TOKEN}/answers`).send({ questionId: 'q1', responseText: 'A1' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.nextQuestion.questionText).toBe('How do you design schemas?');
+    expect(prisma.question.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ kind: 'plan_fallback', generatedByModel: 'plan-fallback' }),
+    });
+  });
+
+  it('completes the interview when the AI ends after the minimum', async () => {
+    arrangeAnswer(answeredQuestions(5));
+    anthropicService.generateNextTurn.mockResolvedValue({
+      action: 'end',
+      topic: '',
+      leadIn: 'Thank you, that covers everything.',
+      questionText: '',
+      rationale: 'All topics covered',
+      model: 'claude-opus-5-5',
+      promptVersion: 'interview_turn.v1',
+    });
+
+    const res = await request(app).post(`/api/sessions/${TOKEN}/answers`).send({ questionId: 'q5', responseText: 'A5' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.done).toBe(true);
+    expect(res.body.closingMessage).toBe('Thank you, that covers everything.');
+    expect(prisma.candidateSession.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'COMPLETED', dataRetentionUntil: expect.any(Date) }) })
+    );
+  });
+
+  it('ends at the maximum without calling the AI', async () => {
+    arrangeAnswer(answeredQuestions(10));
+
+    const res = await request(app).post(`/api/sessions/${TOKEN}/answers`).send({ questionId: 'q10', responseText: 'A10' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.done).toBe(true);
+    expect(anthropicService.generateNextTurn).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/sessions/:token/next-question (Phase 7.6 recovery)', () => {
+  it('returns the pending question without calling the AI when one is waiting', async () => {
+    prisma.candidateSession.findUnique.mockResolvedValue(
+      baseSession({ status: 'IN_PROGRESS', resumeText: 'r', interviewPlan: { topics: [] } })
+    );
+    prisma.question.findMany.mockResolvedValue([
+      { id: 'q1', orderIndex: 0, questionText: 'Q1', kind: 'opening', topic: 'APIs', responses: [] },
+    ]);
+
+    const res = await request(app).post(`/api/sessions/${TOKEN}/next-question`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.nextQuestion.id).toBe('q1');
+    expect(anthropicService.generateNextTurn).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 for a fixed-question (non-conversational) session', async () => {
+    prisma.candidateSession.findUnique.mockResolvedValue(baseSession({ status: 'IN_PROGRESS', resumeText: 'r' }));
+
+    const res = await request(app).post(`/api/sessions/${TOKEN}/next-question`);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('not_conversational');
   });
 });

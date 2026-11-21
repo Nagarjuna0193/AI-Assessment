@@ -111,6 +111,10 @@ model CandidateSession {
   // 0-100 LLM-judged resume-vs-JD match score + short rationale.
   resumeJdScore      Int?          @map("resume_jd_score")
   resumeJdRationale  String?       @map("resume_jd_rationale")
+  // Conversational AI-mode interviews (Phase 7.6): topics the AI planned to
+  // cover from JD + resume, plus the opening line. Null for MANUAL sessions
+  // and for sessions whose questions were all pre-generated (pre-7.6).
+  interviewPlan      Json?         @map("interview_plan")
   consentRecordId    String?       @unique @map("consent_record_id")
   startedAt          DateTime?     @map("started_at")
   completedAt        DateTime?     @map("completed_at")
@@ -215,6 +219,14 @@ model Question {
   // Model + prompt version that generated this question (or "manual" when
   // copied from the template's fixed question set), for auditability.
   generatedByModel String?  @map("generated_by_model")
+  // Conversational interviews (Phase 7.6). leadIn is the short spoken
+  // acknowledgement shown before the question; kind is opening | follow_up |
+  // new_topic | plan_fallback; topic is the plan topic it belongs to;
+  // rationale is the AI's reviewer-only reason for asking it (explainability).
+  leadIn           String?  @map("lead_in")
+  kind             String?
+  topic            String?
+  rationale        String?
   createdAt        DateTime @default(now()) @map("created_at")
 
   session   CandidateSession @relation(fields: [sessionId], references: [id])

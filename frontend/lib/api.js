@@ -78,6 +78,8 @@ export const api = {
   },
   submitSessionAnswer: (token, payload) =>
     request(`/api/sessions/${token}/answers`, { method: 'POST', body: payload }),
+  // Conversational interviews: continue if the next question wasn't written.
+  continueSession: (token) => request(`/api/sessions/${token}/next-question`, { method: 'POST' }),
   transcribeSessionAnswer: (token, audioBlob) => {
     const formData = new FormData();
     formData.append('audio', audioBlob, 'answer.webm');
