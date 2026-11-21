@@ -14,7 +14,16 @@ function requiredConsentTypesForMode(mode) {
   return mode === 'VOICE' ? [...REQUIRED_CONSENT_TYPES, VOICE_CONSENT_TYPE] : REQUIRED_CONSENT_TYPES;
 }
 
+// Local testing only: AI_MOCK_MODE=true swaps the Claude and voice calls for
+// canned placeholder output (src/services/mockAiService.js). Refused in
+// production so fake scores can never reach real candidates.
+const aiMockMode = process.env.AI_MOCK_MODE === 'true';
+if (aiMockMode && process.env.NODE_ENV === 'production') {
+  throw new Error('AI_MOCK_MODE=true is not allowed when NODE_ENV=production');
+}
+
 module.exports = {
+  aiMockMode,
   port: process.env.PORT || 4000,
   anthropicApiKey: process.env.ANTHROPIC_API_KEY,
   anthropicModel: process.env.ANTHROPIC_MODEL || 'claude-opus-5-5',

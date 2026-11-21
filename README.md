@@ -68,6 +68,10 @@ UI conventions (shared components, accessibility rules, security headers)
 are in `docs/ARCHITECTURE.md` under "Frontend UI conventions".
 
 Copy `.env.example` to `.env` and fill in the required keys before running.
+To try the full flow locally without Anthropic/OpenAI keys, set
+`AI_MOCK_MODE=true` in `backend/.env`: questions, scores, transcripts and
+question audio become clearly labelled placeholders (model `mock-ai`). It is
+refused when `NODE_ENV=production`.
 
 **Data retention job (DPDP):** `cd backend && npm run retention` anonymizes
 candidate data past its retention window (`DATA_RETENTION_DAYS`, default

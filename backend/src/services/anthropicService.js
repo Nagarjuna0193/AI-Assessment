@@ -2,6 +2,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { betaZodOutputFormat } = require('@anthropic-ai/sdk/helpers/beta/zod');
 const { z } = require('zod');
 const config = require('../config');
+const mockAi = require('./mockAiService');
 
 const client = new Anthropic({ apiKey: config.anthropicApiKey });
 
@@ -143,6 +144,7 @@ async function callStructured({ schema, system, userContent, errorLabel }) {
 // personalized questions + a resume-vs-JD score; MANUAL mode returns only
 // the score (questions are already fixed on the template).
 async function generateSessionQuestionsAndScore(jobDescriptionText, resumeText, questionMode) {
+  if (config.aiMockMode) return mockAi.generateSessionQuestionsAndScore(questionMode, PROMPT_VERSIONS);
   const isAiMode = questionMode === 'AI';
 
   const system = isAiMode
@@ -182,6 +184,7 @@ function formatTranscript(transcript) {
 
 // Phase 5: full structured feedback report for a completed session.
 async function evaluateTranscript(jobDescriptionText, transcript, { mode } = {}) {
+  if (config.aiMockMode) return mockAi.evaluateTranscript(transcript, PROMPT_VERSIONS.evaluation);
   const modeNote =
     mode === 'VOICE' ? 'Answer mode: voice (answers were machine-transcribed).' : 'Answer mode: typed text.';
 

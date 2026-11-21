@@ -1,5 +1,6 @@
 const OpenAI = require('openai');
 const config = require('../config');
+const mockAi = require('./mockAiService');
 
 class VoiceProviderError extends Error {
   constructor(message) {
@@ -21,6 +22,7 @@ function getClient() {
 
 // STT: transcribe a candidate's spoken answer to text.
 async function transcribeAudio(buffer, filename, mimeType) {
+  if (config.aiMockMode) return mockAi.transcribeAudio(buffer);
   try {
     const file = await OpenAI.toFile(buffer, filename || 'answer.webm', {
       type: mimeType || 'audio/webm',
@@ -37,6 +39,7 @@ async function transcribeAudio(buffer, filename, mimeType) {
 
 // TTS: synthesize a question's text so it can be read aloud to the candidate.
 async function synthesizeSpeech(text) {
+  if (config.aiMockMode) return mockAi.synthesizeSpeech();
   try {
     const response = await getClient().audio.speech.create({
       model: config.ttsModel,

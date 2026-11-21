@@ -284,6 +284,9 @@ See `docs/DECISIONS.md` for a note on how this phase breakdown was derived.
       fixture API (no horizontal overflow)
 - [ ] No automated frontend tests yet (no test runner in `frontend/`) —
       parked below
+- [x] `AI_MOCK_MODE` for local testing without API keys
+      (`backend/src/services/mockAiService.js`, refused in production;
+      `backend/tests/mockAi.test.js`) — 115/115 backend tests passing
 
 ## Phase 8 — Pilot deployment
 - [ ] Deploy to Railway/Render
